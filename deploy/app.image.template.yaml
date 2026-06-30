@@ -1,14 +1,14 @@
 name: polymarket-mm-bot
 region: tor
-features:
-  - buildpack-stack=ubuntu-22
 services:
   - name: dashboard
-    github:
-      repo: __GITHUB_REPO__
-      branch: master
-      deploy_on_push: true
-    dockerfile_path: Dockerfile
+    image:
+      registry_type: DOCR
+      registry: polymarket-mm
+      repository: bot
+      tag: latest
+      deploy_on_push:
+        enabled: true
     http_port: 8080
     instance_count: 1
     instance_size_slug: basic-xxs
@@ -28,16 +28,16 @@ services:
         value: "false"
       - key: RUN_MODE
         scope: RUN_TIME
-        value: "paper"
+        value: paper
       - key: POLYMARKET_HOST
         scope: RUN_TIME
-        value: "https://clob.polymarket.com"
+        value: https://clob.polymarket.com
       - key: POLYMARKET_GAMMA_HOST
         scope: RUN_TIME
-        value: "https://gamma-api.polymarket.com"
+        value: https://gamma-api.polymarket.com
       - key: POLYMARKET_WS_URL
         scope: RUN_TIME
-        value: "wss://ws-subscriptions-clob.polymarket.com/ws/market"
+        value: wss://ws-subscriptions-clob.polymarket.com/ws/market
       - key: POLYMARKET_API_KEY
         scope: RUN_TIME
         type: SECRET
@@ -59,11 +59,13 @@ services:
         value: __POLYMARKET_FUNDER_ADDRESS__
 workers:
   - name: bot
-    github:
-      repo: __GITHUB_REPO__
-      branch: master
-      deploy_on_push: true
-    dockerfile_path: Dockerfile
+    image:
+      registry_type: DOCR
+      registry: polymarket-mm
+      repository: bot
+      tag: latest
+      deploy_on_push:
+        enabled: true
     instance_count: 1
     instance_size_slug: basic-xxs
     run_command: alembic upgrade head && python -m polymarket_mm_bot.main
@@ -80,16 +82,16 @@ workers:
         value: "false"
       - key: RUN_MODE
         scope: RUN_TIME
-        value: "paper"
+        value: paper
       - key: POLYMARKET_HOST
         scope: RUN_TIME
-        value: "https://clob.polymarket.com"
+        value: https://clob.polymarket.com
       - key: POLYMARKET_GAMMA_HOST
         scope: RUN_TIME
-        value: "https://gamma-api.polymarket.com"
+        value: https://gamma-api.polymarket.com
       - key: POLYMARKET_WS_URL
         scope: RUN_TIME
-        value: "wss://ws-subscriptions-clob.polymarket.com/ws/market"
+        value: wss://ws-subscriptions-clob.polymarket.com/ws/market
       - key: POLYMARKET_API_KEY
         scope: RUN_TIME
         type: SECRET
