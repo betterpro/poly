@@ -1,0 +1,42 @@
+{
+  "name": "polymarket-mm-bot-fw",
+  "droplet_ids": [581405715],
+  "inbound_rules": [
+    {
+      "protocol": "tcp",
+      "ports": "22",
+      "sources": {
+        "addresses": ["0.0.0.0/0", "::/0"]
+      }
+    },
+    {
+      "protocol": "tcp",
+      "ports": "8000",
+      "sources": {
+        "addresses": ["0.0.0.0/0", "::/0"]
+      }
+    }
+  ],
+  "outbound_rules": [
+    {
+      "protocol": "tcp",
+      "ports": "1-65535",
+      "destinations": {
+        "addresses": ["0.0.0.0/0", "::/0"]
+      }
+    },
+    {
+      "protocol": "udp",
+      "ports": "1-65535",
+      "destinations": {
+        "addresses": ["0.0.0.0/0", "::/0"]
+      }
+    },
+    {
+      "protocol": "icmp",
+      "destinations": {
+        "addresses": ["0.0.0.0/0", "::/0"]
+      }
+    }
+  ]
+}

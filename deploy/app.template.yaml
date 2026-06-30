@@ -1,0 +1,121 @@
+name: polymarket-mm-bot
+region: tor
+features:
+  - buildpack-stack=ubuntu-22
+services:
+  - name: dashboard
+    github:
+      repo: __GITHUB_REPO__
+      branch: main
+      deploy_on_push: true
+    dockerfile_path: Dockerfile
+    http_port: 8080
+    instance_count: 1
+    instance_size_slug: basic-xxs
+    run_command: uvicorn polymarket_mm_bot.dashboard.app:app --host 0.0.0.0 --port 8080
+    routes:
+      - path: /
+    envs:
+      - key: DATABASE_URL
+        scope: RUN_TIME
+        type: SECRET
+        value: __DATABASE_URL__
+      - key: REDIS_URL
+        scope: RUN_TIME
+        value: ${redis.REDIS_URL}
+      - key: PAPER_TRADING
+        scope: RUN_TIME
+        value: "true"
+      - key: LIVE_TRADING_CONFIRMED
+        scope: RUN_TIME
+        value: "false"
+      - key: RUN_MODE
+        scope: RUN_TIME
+        value: "paper"
+      - key: POLYMARKET_HOST
+        scope: RUN_TIME
+        value: "https://clob.polymarket.com"
+      - key: POLYMARKET_GAMMA_HOST
+        scope: RUN_TIME
+        value: "https://gamma-api.polymarket.com"
+      - key: POLYMARKET_WS_URL
+        scope: RUN_TIME
+        value: "wss://ws-subscriptions-clob.polymarket.com/ws/market"
+      - key: POLYMARKET_API_KEY
+        scope: RUN_TIME
+        type: SECRET
+        value: __POLYMARKET_API_KEY__
+      - key: POLYMARKET_API_SECRET
+        scope: RUN_TIME
+        type: SECRET
+        value: __POLYMARKET_API_SECRET__
+      - key: POLYMARKET_API_PASSPHRASE
+        scope: RUN_TIME
+        type: SECRET
+        value: __POLYMARKET_API_PASSPHRASE__
+      - key: POLYMARKET_PRIVATE_KEY
+        scope: RUN_TIME
+        type: SECRET
+        value: __POLYMARKET_PRIVATE_KEY__
+      - key: POLYMARKET_FUNDER_ADDRESS
+        scope: RUN_TIME
+        value: __POLYMARKET_FUNDER_ADDRESS__
+workers:
+  - name: bot
+    github:
+      repo: __GITHUB_REPO__
+      branch: main
+      deploy_on_push: true
+    dockerfile_path: Dockerfile
+    instance_count: 1
+    instance_size_slug: basic-xxs
+    run_command: alembic upgrade head && python -m polymarket_mm_bot.main
+    envs:
+      - key: DATABASE_URL
+        scope: RUN_TIME
+        type: SECRET
+        value: __DATABASE_URL__
+      - key: REDIS_URL
+        scope: RUN_TIME
+        value: ${redis.REDIS_URL}
+      - key: PAPER_TRADING
+        scope: RUN_TIME
+        value: "true"
+      - key: LIVE_TRADING_CONFIRMED
+        scope: RUN_TIME
+        value: "false"
+      - key: RUN_MODE
+        scope: RUN_TIME
+        value: "paper"
+      - key: POLYMARKET_HOST
+        scope: RUN_TIME
+        value: "https://clob.polymarket.com"
+      - key: POLYMARKET_GAMMA_HOST
+        scope: RUN_TIME
+        value: "https://gamma-api.polymarket.com"
+      - key: POLYMARKET_WS_URL
+        scope: RUN_TIME
+        value: "wss://ws-subscriptions-clob.polymarket.com/ws/market"
+      - key: POLYMARKET_API_KEY
+        scope: RUN_TIME
+        type: SECRET
+        value: __POLYMARKET_API_KEY__
+      - key: POLYMARKET_API_SECRET
+        scope: RUN_TIME
+        type: SECRET
+        value: __POLYMARKET_API_SECRET__
+      - key: POLYMARKET_API_PASSPHRASE
+        scope: RUN_TIME
+        type: SECRET
+        value: __POLYMARKET_API_PASSPHRASE__
+      - key: POLYMARKET_PRIVATE_KEY
+        scope: RUN_TIME
+        type: SECRET
+        value: __POLYMARKET_PRIVATE_KEY__
+      - key: POLYMARKET_FUNDER_ADDRESS
+        scope: RUN_TIME
+        value: __POLYMARKET_FUNDER_ADDRESS__
+databases:
+  - name: redis
+    engine: REDIS
+    production: true

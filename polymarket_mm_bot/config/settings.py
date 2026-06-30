@@ -1,0 +1,75 @@
+from functools import lru_cache
+from typing import Literal
+
+from pydantic import model_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+
+    app_name: str = "polymarket-mm-bot"
+    environment: str = "local"
+    log_level: str = "INFO"
+
+    paper_trading: bool = True
+    live_trading_confirmed: bool = False
+    starting_capital: float = 10_000.0
+
+    database_url: str = "postgresql+psycopg://postgres:postgres@localhost:5432/polymarket_mm"
+    redis_url: str = "redis://localhost:6379/0"
+
+    polymarket_host: str = "https://clob.polymarket.com"
+    polymarket_gamma_host: str = "https://gamma-api.polymarket.com"
+    polymarket_ws_url: str = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
+    polymarket_api_key: str | None = None
+    polymarket_api_secret: str | None = None
+    polymarket_api_passphrase: str | None = None
+    polymarket_private_key: str | None = None
+    polymarket_funder_address: str | None = None
+    polymarket_chain_id: int = 137
+    signature_type: int = 0
+
+    max_daily_loss: float = 300.0
+    max_position_per_market: float = 200.0
+    max_total_exposure: float = 1_000.0
+    max_order_size: float = 25.0
+    max_open_orders: int = 20
+    max_markets_traded: int = 10
+    max_api_errors: int = 5
+    max_order_failures_per_market: int = 3
+
+    min_volume: float = 10_000.0
+    min_liquidity: float = 2_000.0
+    min_spread: float = 0.01
+    market_score_threshold: float = 70.0
+    min_time_to_resolution_hours: float = 12.0
+    allow_near_resolution: bool = False
+
+    target_spread: float = 0.02
+    min_tick: float = 0.01
+    order_size: float = 10.0
+    stale_order_seconds: int = 30
+    stale_data_seconds: int = 15
+
+    run_mode: Literal["paper", "live"] = "paper"
+
+    @model_validator(mode="after")
+    def enforce_live_safety(self) -> "Settings":
+        if not self.paper_trading or self.run_mode == "live":
+            if not self.live_trading_confirmed:
+                raise ValueError("Live trading requires LIVE_TRADING_CONFIRMED=true.")
+            if not self.polymarket_private_key:
+                raise ValueError("Live trading requires POLYMARKET_PRIVATE_KEY.")
+            if not self.polymarket_funder_address:
+                raise ValueError("Live trading requires POLYMARKET_FUNDER_ADDRESS.")
+        return self
+
+    @property
+    def mode_warning(self) -> str:
+        return "PAPER TRADING - no real orders" if self.paper_trading else "LIVE TRADING ENABLED"
+
+
+@lru_cache
+def get_settings() -> Settings:
+    return Settings()
