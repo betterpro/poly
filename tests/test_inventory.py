@@ -10,3 +10,14 @@ def test_inventory_updates_position_and_pnl(settings):
     position = inventory.apply_fill(sell, 10, 0.55)
     assert position.yes_size == 0
     assert round(position.realized_pnl, 2) == 0.5
+
+
+def test_inventory_unrealized_pnl(settings):
+    inventory = InventoryManager(settings)
+    buy = BotOrder(client_order_id="1", market_id="m1", side=Side.BUY, price=0.4, size=10)
+    inventory.apply_fill(buy, 10, 0.4)
+    assert round(inventory.unrealized_pnl("m1", 0.45), 2) == 0.5
+    realized, unrealized, total = inventory.portfolio_pnl({"m1": 0.45})
+    assert realized == 0.0
+    assert round(unrealized, 2) == 0.5
+    assert round(total, 2) == 0.5

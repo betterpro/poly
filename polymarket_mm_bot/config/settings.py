@@ -1,8 +1,11 @@
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import model_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from polymarket_mm_bot.config.db_url import normalize_database_url
+from polymarket_mm_bot.utils import DEFAULT_ALLOWED_CATEGORIES, normalize_category_list
 
 
 class Settings(BaseSettings):
@@ -52,7 +55,19 @@ class Settings(BaseSettings):
     stale_order_seconds: int = 30
     stale_data_seconds: int = 15
 
+    allowed_categories: list[str] = Field(default_factory=lambda: list(DEFAULT_ALLOWED_CATEGORIES))
+
     run_mode: Literal["paper", "live"] = "paper"
+
+    @field_validator("allowed_categories", mode="before")
+    @classmethod
+    def normalize_allowed_categories(cls, value: list[str] | str | None) -> list[str]:
+        return normalize_category_list(value)
+
+    @field_validator("database_url", mode="before")
+    @classmethod
+    def normalize_database_url(cls, value: str) -> str:
+        return normalize_database_url(str(value))
 
     @model_validator(mode="after")
     def enforce_live_safety(self) -> "Settings":

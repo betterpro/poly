@@ -12,7 +12,7 @@ services:
     http_port: 8080
     instance_count: 1
     instance_size_slug: basic-xxs
-    run_command: uvicorn polymarket_mm_bot.dashboard.app:app --host 0.0.0.0 --port 8080
+    run_command: python -m polymarket_mm_bot.dashboard.server
     routes:
       - path: /
     envs:
@@ -68,7 +68,7 @@ workers:
         enabled: true
     instance_count: 1
     instance_size_slug: basic-xxs
-    run_command: alembic upgrade head && python -m polymarket_mm_bot.main
+    run_command: python -m polymarket_mm_bot.main
     envs:
       - key: DATABASE_URL
         scope: RUN_TIME

@@ -8,4 +8,4 @@ COPY pyproject.toml /app/
 RUN pip install --no-cache-dir -e .
 COPY . /app
 
-CMD ["uvicorn", "polymarket_mm_bot.dashboard.app:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["python", "-m", "polymarket_mm_bot.dashboard.server"]

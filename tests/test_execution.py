@@ -1,6 +1,6 @@
 from polymarket_mm_bot.execution import PaperExecutionEngine
 from polymarket_mm_bot.inventory import InventoryManager
-from polymarket_mm_bot.models import Side
+from polymarket_mm_bot.models import BookLevel, BotOrder, OrderBook, Outcome, Side
 from polymarket_mm_bot.risk import RiskEngine
 
 
@@ -12,3 +12,53 @@ async def test_paper_fill_updates_order_and_position(settings, book):
     fills = await execution.simulate_fills(book)
     assert fills[0].client_order_id == order.client_order_id
     assert inventory.get_position("m1").yes_size == 10
+
+
+async def test_passive_buy_at_bid_does_not_fill(settings):
+    inventory = InventoryManager(settings)
+    risk = RiskEngine(settings, inventory)
+    execution = PaperExecutionEngine(settings, inventory, risk)
+    book = OrderBook(
+        market_id="m1",
+        token_id="yes-token",
+        bids=[BookLevel(price=0.01, size=5000)],
+        asks=[BookLevel(price=0.02, size=5000)],
+    )
+    await execution.create_order("m1", Side.BUY, 0.01, 10, "yes-token")
+    fills = await execution.simulate_fills(book)
+    assert fills == []
+    assert inventory.get_position("m1").yes_size == 0
+
+
+def test_allowed_fill_size_caps_buy(settings):
+    settings.max_position_per_market = 8
+    inventory = InventoryManager(settings)
+    execution = PaperExecutionEngine(settings, inventory, RiskEngine(settings, inventory))
+    inventory.get_position("m1").yes_size = 6
+    order = BotOrder(client_order_id="1", market_id="m1", side=Side.BUY, outcome=Outcome.YES, price=0.5, size=10)
+    assert execution._allowed_fill_size(order) == 2
+
+
+async def test_sell_fill_requires_inventory(settings, book):
+    inventory = InventoryManager(settings)
+    risk = RiskEngine(settings, inventory)
+    execution = PaperExecutionEngine(settings, inventory, risk)
+    await execution.create_order("m1", Side.SELL, 0.48, 10, "yes-token")
+    fills = await execution.simulate_fills(book)
+    assert fills == []
+    inventory.get_position("m1").yes_size = 10
+    inventory.get_position("m1").avg_yes_price = 0.5
+    await execution.create_order("m1", Side.SELL, 0.48, 10, "yes-token")
+    fills = await execution.simulate_fills(book)
+    assert len(fills) == 1
+    assert inventory.get_position("m1").yes_size == 0
+
+
+async def test_cancel_all_open_orders(settings):
+    inventory = InventoryManager(settings)
+    risk = RiskEngine(settings, inventory)
+    execution = PaperExecutionEngine(settings, inventory, risk)
+    await execution.create_order("m1", Side.BUY, 0.5, 10, "yes-token")
+    await execution.create_order("m2", Side.SELL, 0.6, 10, "yes-token")
+    await execution.cancel_all_open_orders()
+    assert all(order.status.value == "canceled" for order in execution.orders.values())

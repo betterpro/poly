@@ -74,6 +74,11 @@ class PaperExecutionEngine:
             if order.market_id == market_id:
                 await self.cancel_order(order.client_order_id)
 
+    async def cancel_all_open_orders(self) -> None:
+        for order in list(self.orders.values()):
+            if order.status in {OrderStatus.OPEN, OrderStatus.PARTIALLY_FILLED}:
+                await self.cancel_order(order.client_order_id)
+
     async def cancel_stale_orders(self) -> None:
         now = datetime.now(UTC)
         for order in list(self.orders.values()):
@@ -85,29 +90,37 @@ class PaperExecutionEngine:
         for order in self.orders.values():
             if order.market_id != order_book.market_id or order.status not in {OrderStatus.OPEN, OrderStatus.PARTIALLY_FILLED}:
                 continue
-            crossed = (order.side == Side.BUY and order_book.best_ask is not None and order.price >= order_book.best_ask) or (
-                order.side == Side.SELL and order_book.best_bid is not None and order.price <= order_book.best_bid
-            )
-            passive_trade_through = (
-                order.side == Side.BUY
-                and order_book.best_bid is not None
-                and order.price >= order_book.best_bid
-                and order_book.bid_depth > order.size * 3
-            ) or (
-                order.side == Side.SELL
-                and order_book.best_ask is not None
-                and order.price <= order_book.best_ask
-                and order_book.ask_depth > order.size * 3
-            )
-            if crossed or passive_trade_through:
-                fill_size = order.remaining_size
-                order.filled_size += fill_size
-                order.status = OrderStatus.FILLED
-                order.updated_at = datetime.now(UTC)
-                self.inventory.apply_fill(order, fill_size, order.price)
-                filled.append(order)
-                logger.info("fill_received", client_order_id=order.client_order_id, fill_size=fill_size, price=order.price)
+            if not self._order_crosses_book(order, order_book):
+                continue
+            fill_size = min(order.remaining_size, self._allowed_fill_size(order))
+            if fill_size <= 0:
+                continue
+            order.filled_size += fill_size
+            order.status = OrderStatus.FILLED if order.remaining_size <= 0 else OrderStatus.PARTIALLY_FILLED
+            order.updated_at = datetime.now(UTC)
+            self.inventory.apply_fill(order, fill_size, order.price)
+            filled.append(order)
+            logger.info("fill_received", client_order_id=order.client_order_id, fill_size=fill_size, price=order.price)
         return filled
+
+    def _order_crosses_book(self, order: BotOrder, order_book: OrderBook) -> bool:
+        if order.side == Side.BUY:
+            return order_book.best_ask is not None and order.price >= order_book.best_ask
+        return order_book.best_bid is not None and order.price <= order_book.best_bid
+
+    def _allowed_fill_size(self, order: BotOrder) -> float:
+        position = self.inventory.get_position(order.market_id)
+        if order.side == Side.BUY and order.outcome == Outcome.YES:
+            room = self.settings.max_position_per_market - position.yes_size
+            return max(0.0, min(order.remaining_size, room))
+        if order.side == Side.SELL and order.outcome == Outcome.YES:
+            return max(0.0, min(order.remaining_size, position.yes_size))
+        if order.side == Side.BUY and order.outcome == Outcome.NO:
+            room = self.settings.max_position_per_market - position.no_size
+            return max(0.0, min(order.remaining_size, room))
+        if order.side == Side.SELL and order.outcome == Outcome.NO:
+            return max(0.0, min(order.remaining_size, position.no_size))
+        return order.remaining_size
 
 
 class LiveExecutionEngine:

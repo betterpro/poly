@@ -126,3 +126,11 @@ class MarketScoreRow(Base):
     score: Mapped[float] = mapped_column(Float)
     rejected: Mapped[bool] = mapped_column(Boolean, default=False)
     reasons: Mapped[list] = mapped_column(JSON, default=list)
+
+
+class BotConfigRow(Base, TimestampMixin):
+    __tablename__ = "bot_config"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    config_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    status_json: Mapped[dict] = mapped_column(JSON, default=dict)

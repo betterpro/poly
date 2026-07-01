@@ -49,6 +49,29 @@ class InventoryManager:
                 position.realized_pnl += (fill_price - position.avg_yes_price) * fill_size
         return position
 
+    def unrealized_pnl(self, market_id: str, yes_mark_price: float) -> float:
+        position = self.get_position(market_id)
+        unrealized = 0.0
+        if position.yes_size > 0:
+            unrealized += position.yes_size * (yes_mark_price - position.avg_yes_price)
+        if position.no_size > 0:
+            no_mark_price = 1.0 - yes_mark_price
+            unrealized += position.no_size * (no_mark_price - position.avg_no_price)
+        return unrealized
+
+    def portfolio_pnl(self, mark_prices: dict[str, float]) -> tuple[float, float, float]:
+        realized = sum(position.realized_pnl for position in self.positions.values())
+        unrealized = sum(
+            self.unrealized_pnl(market_id, mark_price)
+            for market_id, mark_price in mark_prices.items()
+            if self._position_is_open(self.positions[market_id])
+        )
+        return realized, unrealized, realized + unrealized
+
+    @staticmethod
+    def _position_is_open(position: Position) -> bool:
+        return position.yes_size > 0 or position.no_size > 0 or position.realized_pnl != 0
+
     def total_exposure(self) -> float:
         return sum(position.gross_exposure for position in self.positions.values())
 

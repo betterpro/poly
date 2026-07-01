@@ -12,6 +12,7 @@ import websockets
 
 from polymarket_mm_bot.config import Settings
 from polymarket_mm_bot.models import BookLevel, Market, OrderBook, Side, Trade
+from polymarket_mm_bot.utils import event_belongs_to_category
 
 logger = structlog.get_logger()
 
@@ -24,13 +25,44 @@ class PolymarketDataClient:
     async def close(self) -> None:
         await self.http.aclose()
 
-    async def fetch_active_markets(self, limit: int = 200) -> list[Market]:
+    async def fetch_active_markets(self, limit: int = 200, categories: list[str] | None = None) -> list[Market]:
+        if categories:
+            return await self._fetch_markets_for_categories(categories, limit)
         params = {"active": "true", "closed": "false", "limit": limit}
         response = await self.http.get(f"{self.settings.polymarket_gamma_host}/markets", params=params)
         response.raise_for_status()
         payload = response.json()
         rows = payload if isinstance(payload, list) else payload.get("data", [])
         return [self._normalize_market(row) for row in rows if row]
+
+    async def _fetch_markets_for_categories(self, categories: list[str], limit: int) -> list[Market]:
+        seen: dict[str, Market] = {}
+        per_category = max(limit // max(len(categories), 1), 25)
+        for category in categories:
+            params = {
+                "active": "true",
+                "closed": "false",
+                "limit": per_category,
+                "tag_slug": category,
+            }
+            response = await self.http.get(f"{self.settings.polymarket_gamma_host}/events", params=params)
+            response.raise_for_status()
+            payload = response.json()
+            events = payload if isinstance(payload, list) else payload.get("data", [])
+            for event in events or []:
+                if not isinstance(event, dict) or not event_belongs_to_category(event, category):
+                    continue
+                for row in event.get("markets") or []:
+                    market = self._normalize_market(row, category=category, event=event)
+                    if market.condition_id and market.condition_id not in seen:
+                        seen[market.condition_id] = market
+        markets = list(seen.values())
+        logger.info(
+            "markets_fetched_for_categories",
+            categories=categories,
+            count=len(markets),
+        )
+        return markets[:limit]
 
     async def fetch_market_metadata(self, condition_id: str) -> dict[str, Any]:
         response = await self.http.get(f"{self.settings.polymarket_host}/clob-markets/{condition_id}")
@@ -65,7 +97,13 @@ class PolymarketDataClient:
                 logger.warning("websocket_disconnect", error=str(exc))
                 await asyncio.sleep(3)
 
-    def _normalize_market(self, row: dict[str, Any]) -> Market:
+    def _normalize_market(
+        self,
+        row: dict[str, Any],
+        *,
+        category: str | None = None,
+        event: dict[str, Any] | None = None,
+    ) -> Market:
         token_ids = row.get("clobTokenIds") or row.get("clob_token_ids") or []
         if isinstance(token_ids, str):
             token_ids = [part.strip().strip('"') for part in token_ids.strip("[]").split(",") if part.strip()]
@@ -76,11 +114,16 @@ class PolymarketDataClient:
                 end_date = datetime.fromisoformat(str(end_date_raw).replace("Z", "+00:00"))
             except ValueError:
                 end_date = None
+        metadata = dict(row)
+        if event:
+            metadata["event"] = event
+            metadata["tags"] = event.get("tags") or metadata.get("tags")
+        resolved_category = category or row.get("category")
         return Market(
             condition_id=str(row.get("conditionId") or row.get("condition_id") or row.get("id")),
             question=str(row.get("question") or row.get("title") or ""),
             slug=row.get("slug"),
-            category=row.get("category"),
+            category=resolved_category,
             active=bool(row.get("active", True)),
             closed=bool(row.get("closed", False)),
             paused=bool(row.get("paused", False)),
@@ -89,7 +132,7 @@ class PolymarketDataClient:
             end_date=end_date,
             yes_token_id=str(token_ids[0]) if len(token_ids) > 0 else None,
             no_token_id=str(token_ids[1]) if len(token_ids) > 1 else None,
-            metadata=row,
+            metadata=metadata,
         )
 
     def _normalize_book(self, row: dict[str, Any], market_id: str, token_id: str) -> OrderBook:

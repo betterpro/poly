@@ -23,7 +23,9 @@ class MarketMakingStrategy:
         return clamp(midpoint + imbalance_adjustment + trade_adjustment, 0.01, 0.99)
 
     def build_signal(self, market_id: str, order_book: OrderBook, trades: list[Trade] | None = None) -> StrategySignal | None:
-        if order_book.spread is None or order_book.spread < self.settings.min_spread:
+        if order_book.best_bid is None or order_book.best_ask is None:
+            return None
+        if order_book.spread is None or order_book.spread <= 0:
             return None
         if order_book.bid_depth + order_book.ask_depth < self.settings.min_liquidity:
             return None
