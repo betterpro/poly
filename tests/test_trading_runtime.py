@@ -9,6 +9,8 @@ from polymarket_mm_bot.trading_runtime import TradingRuntime
 
 
 def test_live_mode_does_not_silently_use_paper_engine():
+    # Live mode must never fall back to the paper engine. With no CLOB SDK/gateway
+    # available, preflight fails and the runtime raises rather than trading on paper.
     settings = Settings(
         paper_trading=False,
         run_mode="live",
@@ -16,7 +18,7 @@ def test_live_mode_does_not_silently_use_paper_engine():
         polymarket_private_key="0xabc",
         polymarket_funder_address="0xdef",
     )
-    with pytest.raises(RuntimeError, match="Live trading is not wired"):
+    with pytest.raises(RuntimeError, match="preflight"):
         TradingRuntime(settings)
 
 

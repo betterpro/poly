@@ -4,18 +4,23 @@ import structlog
 from sqlalchemy.orm import Session, sessionmaker
 
 from polymarket_mm_bot.config import Settings
-from polymarket_mm_bot.execution import PaperExecutionEngine
-from polymarket_mm_bot.inventory import InventoryManager
-from polymarket_mm_bot.risk import RiskEngine
 from polymarket_mm_bot.database.runtime_state import load_orders, load_positions
 from polymarket_mm_bot.database.session import get_session_factory
+from polymarket_mm_bot.execution import LiveExecutionEngine, PaperExecutionEngine
+from polymarket_mm_bot.execution.engine import LIVE_EXECUTION_IMPLEMENTED
+from polymarket_mm_bot.inventory import InventoryManager
+from polymarket_mm_bot.risk import RiskEngine
 
 logger = structlog.get_logger()
 
 
+def _is_live_requested(settings: Settings) -> bool:
+    return not settings.paper_trading or settings.run_mode == "live"
+
+
 class TradingRuntime:
     def __init__(self, settings: Settings):
-        if not settings.paper_trading or settings.run_mode == "live":
+        if _is_live_requested(settings) and not LIVE_EXECUTION_IMPLEMENTED:
             raise RuntimeError(
                 "Live trading is not wired to an exchange adapter yet. "
                 "Keep PAPER_TRADING=true and RUN_MODE=paper until LiveExecutionEngine is implemented."
@@ -25,7 +30,23 @@ class TradingRuntime:
         positions, orders = self._load_persisted_state(self.session_factory)
         self.inventory = InventoryManager(settings, positions)
         self.risk = RiskEngine(settings, self.inventory)
-        self.execution = PaperExecutionEngine(
+        self.execution = self._build_execution(settings, orders)
+
+    def _build_execution(self, settings: Settings, orders: dict):
+        if _is_live_requested(settings):
+            engine = LiveExecutionEngine(
+                settings,
+                self.inventory,
+                self.risk,
+                orders=orders,
+                session_factory=self.session_factory,
+            )
+            # Refuse to arm live trading unless the exchange is reachable and
+            # collateral/allowance are sufficient. Raises RuntimeError otherwise,
+            # which main catches and reports as "live_unavailable".
+            engine.preflight()
+            return engine
+        return PaperExecutionEngine(
             settings,
             self.inventory,
             self.risk,
@@ -34,7 +55,7 @@ class TradingRuntime:
         )
 
     def refresh_settings(self, settings: Settings) -> None:
-        if not settings.paper_trading or settings.run_mode == "live":
+        if _is_live_requested(settings) and not LIVE_EXECUTION_IMPLEMENTED:
             raise RuntimeError(
                 "Live trading is not wired to an exchange adapter yet. "
                 "Keep PAPER_TRADING=true and RUN_MODE=paper until LiveExecutionEngine is implemented."
@@ -42,7 +63,14 @@ class TradingRuntime:
         self.settings = settings
         self.inventory.settings = settings
         self.risk.settings = settings
-        self.execution.settings = settings
+        want_live = _is_live_requested(settings)
+        have_live = isinstance(self.execution, LiveExecutionEngine)
+        if want_live != have_live:
+            # Mode changed at runtime: rebuild the execution engine, carrying open
+            # orders across so state is not lost.
+            self.execution = self._build_execution(settings, self.execution.orders)
+        else:
+            self.execution.settings = settings
 
     @staticmethod
     def _build_session_factory(settings: Settings) -> sessionmaker[Session] | None:

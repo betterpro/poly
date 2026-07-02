@@ -288,6 +288,9 @@ async def run_once() -> None:
                 if settings.paper_trading:
                     await execution.simulate_fills(book)
             await execution.cancel_stale_orders()
+            # In live mode, learn fills by reconciling against the exchange.
+            if not settings.paper_trading:
+                await execution.sync_fills()
             state.strategy_status = {market.condition_id: "running" for market in selected}
         else:
             await execution.cancel_all_open_orders()

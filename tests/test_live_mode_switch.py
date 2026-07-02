@@ -100,8 +100,7 @@ def test_switch_to_live_and_back(tmp_path, monkeypatch):
     state = switch_to_live(code)
     assert state["mode"] == "live"
     assert state["paper_trading"] is False
-    # Live execution is not implemented, so a warning is surfaced.
-    assert "warning" in state
+    assert state["prerequisites"]["execution_implemented"] is True
 
     # Replaying the same code is rejected.
     with pytest.raises(ValueError, match="already used"):
