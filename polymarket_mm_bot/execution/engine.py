@@ -5,8 +5,10 @@ from datetime import UTC, datetime
 from typing import Protocol
 
 import structlog
+from sqlalchemy.orm import Session, sessionmaker
 
 from polymarket_mm_bot.config import Settings
+from polymarket_mm_bot.database.runtime_state import save_order, save_position
 from polymarket_mm_bot.inventory import InventoryManager
 from polymarket_mm_bot.models import BotOrder, OrderBook, OrderStatus, Outcome, Side
 from polymarket_mm_bot.risk import RiskEngine
@@ -28,11 +30,32 @@ class ExecutionEngine(Protocol):
 
 
 class PaperExecutionEngine:
-    def __init__(self, settings: Settings, inventory: InventoryManager, risk: RiskEngine):
+    def __init__(
+        self,
+        settings: Settings,
+        inventory: InventoryManager,
+        risk: RiskEngine,
+        *,
+        orders: dict[str, BotOrder] | None = None,
+        session_factory: sessionmaker[Session] | None = None,
+    ):
         self.settings = settings
         self.inventory = inventory
         self.risk = risk
-        self.orders: dict[str, BotOrder] = {}
+        self.orders: dict[str, BotOrder] = orders or {}
+        self.session_factory = session_factory
+
+    def _persist_order(self, order: BotOrder) -> None:
+        if self.session_factory is None:
+            return
+        with self.session_factory() as session:
+            save_order(session, order)
+
+    def _persist_position(self, market_id: str) -> None:
+        if self.session_factory is None:
+            return
+        with self.session_factory() as session:
+            save_position(session, self.inventory.get_position(market_id))
 
     async def create_order(
         self,
@@ -56,8 +79,10 @@ class PaperExecutionEngine:
         if not decision.allowed:
             order.status = OrderStatus.REJECTED
             logger.warning("order_rejected", reason=decision.code, market_id=market_id)
+            self._persist_order(order)
             return order
         self.orders[order.client_order_id] = order
+        self._persist_order(order)
         logger.info("order_created", **order.model_dump(mode="json"))
         return order
 
@@ -67,6 +92,7 @@ class PaperExecutionEngine:
             return
         order.status = OrderStatus.CANCELED
         order.updated_at = datetime.now(UTC)
+        self._persist_order(order)
         logger.info("order_canceled", client_order_id=client_order_id, market_id=order.market_id)
 
     async def cancel_all_for_market(self, market_id: str) -> None:
@@ -99,6 +125,8 @@ class PaperExecutionEngine:
             order.status = OrderStatus.FILLED if order.remaining_size <= 0 else OrderStatus.PARTIALLY_FILLED
             order.updated_at = datetime.now(UTC)
             self.inventory.apply_fill(order, fill_size, order.price)
+            self._persist_order(order)
+            self._persist_position(order.market_id)
             filled.append(order)
             logger.info("fill_received", client_order_id=order.client_order_id, fill_size=fill_size, price=order.price)
         return filled

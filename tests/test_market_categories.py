@@ -1,7 +1,5 @@
 from polymarket_mm_bot.utils import (
-    category_aliases,
     event_belongs_to_category,
-    event_tag_slugs,
     market_category_slugs,
     market_dict_matches_categories,
     market_matches_categories,

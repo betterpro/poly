@@ -5,7 +5,7 @@ def normalize_database_url(url: str) -> str:
     if "supabase.co" in cleaned and "sslmode=" not in cleaned:
         separator = "&" if "?" in cleaned else "?"
         cleaned = f"{cleaned}{separator}sslmode=require"
-    if "connect_timeout=" not in cleaned:
+    if cleaned.startswith("postgresql") and "connect_timeout=" not in cleaned:
         separator = "&" if "?" in cleaned else "?"
         cleaned = f"{cleaned}{separator}connect_timeout=5"
     return cleaned

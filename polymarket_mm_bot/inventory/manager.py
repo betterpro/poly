@@ -5,9 +5,11 @@ from polymarket_mm_bot.models import BotOrder, Outcome, Position, Side
 
 
 class InventoryManager:
-    def __init__(self, settings: Settings):
+    def __init__(self, settings: Settings, positions: dict[str, Position] | None = None):
         self.settings = settings
         self.positions: dict[str, Position] = defaultdict(lambda: Position(market_id=""))
+        if positions:
+            self.positions.update(positions)
 
     def get_position(self, market_id: str) -> Position:
         position = self.positions[market_id]
@@ -21,6 +23,10 @@ class InventoryManager:
         if side == Side.BUY:
             projected += self.settings.order_size
         else:
+            if outcome == Outcome.YES and position.yes_size <= 0:
+                return False
+            if outcome == Outcome.NO and position.no_size <= 0:
+                return False
             projected = max(projected - self.settings.order_size, 0)
         return projected <= self.settings.max_position_per_market
 
@@ -62,15 +68,11 @@ class InventoryManager:
     def portfolio_pnl(self, mark_prices: dict[str, float]) -> tuple[float, float, float]:
         realized = sum(position.realized_pnl for position in self.positions.values())
         unrealized = sum(
-            self.unrealized_pnl(market_id, mark_price)
-            for market_id, mark_price in mark_prices.items()
-            if self._position_is_open(self.positions[market_id])
+            self.unrealized_pnl(position.market_id, mark_prices[position.market_id])
+            for position in self.positions.values()
+            if (position.yes_size > 0 or position.no_size > 0) and position.market_id in mark_prices
         )
         return realized, unrealized, realized + unrealized
-
-    @staticmethod
-    def _position_is_open(position: Position) -> bool:
-        return position.yes_size > 0 or position.no_size > 0 or position.realized_pnl != 0
 
     def total_exposure(self) -> float:
         return sum(position.gross_exposure for position in self.positions.values())
