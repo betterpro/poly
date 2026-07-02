@@ -262,6 +262,45 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=503, detail="Could not resume trading.") from exc
         return {"trading_enabled": True, **control}
 
+    @app.get("/trading/mode")
+    async def trading_mode() -> dict:
+        from polymarket_mm_bot.dashboard.mode_control import get_mode_state
+
+        if not database_ok():
+            raise HTTPException(status_code=503, detail="Database unreachable.")
+        try:
+            return get_mode_state()
+        except Exception as exc:
+            logger.warning("trading_mode_read_failed", error=str(exc))
+            raise HTTPException(status_code=503, detail="Could not read trading mode.") from exc
+
+    @app.post("/trading/mode/live")
+    async def trading_mode_live(payload: dict) -> dict:
+        from polymarket_mm_bot.dashboard.mode_control import switch_to_live
+
+        if not database_ok():
+            raise HTTPException(status_code=503, detail="Database unreachable.")
+        code = str(payload.get("code", "")).strip()
+        try:
+            return switch_to_live(code)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except Exception as exc:
+            logger.warning("trading_mode_live_failed", error=str(exc))
+            raise HTTPException(status_code=503, detail="Could not switch to live trading.") from exc
+
+    @app.post("/trading/mode/paper")
+    async def trading_mode_paper() -> dict:
+        from polymarket_mm_bot.dashboard.mode_control import switch_to_paper
+
+        if not database_ok():
+            raise HTTPException(status_code=503, detail="Database unreachable.")
+        try:
+            return switch_to_paper()
+        except Exception as exc:
+            logger.warning("trading_mode_paper_failed", error=str(exc))
+            raise HTTPException(status_code=503, detail="Could not switch to paper trading.") from exc
+
     @app.get("/risk-events")
     async def risk_events():
         return _status().get("risk_events", [])

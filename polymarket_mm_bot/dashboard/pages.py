@@ -74,6 +74,12 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     .pnl-reset-note { color: #64748b; font-size: 0.82rem; }
     .hint { color: #94a3b8; font-size: 0.9rem; margin-bottom: 1rem; }
     .message { min-height: 1.25rem; color: #86efac; }
+    .message.error { color: #fca5a5; }
+    .mode-controls { display: flex; gap: 0.6rem; align-items: center; flex-wrap: wrap; margin: 0.5rem 0; }
+    .mode-controls input { width: 8rem; background: #0f172a; color: #e5e7eb; border: 1px solid #374151; border-radius: 8px; padding: 0.45rem 0.6rem; font-size: 1rem; letter-spacing: 0.2em; }
+    #mode-section { background: #111827; border: 1px solid #1f2937; border-radius: 12px; padding: 1rem 1.25rem; }
+    .mode-badge-live { background: #7f1d1d; color: #fecaca; }
+    .mode-badge-paper { background: #14532d; color: #bbf7d0; }
     .warn { background: #451a1a; border: 1px solid #991b1b; color: #fecaca; padding: 0.75rem 1rem; border-radius: 8px; margin-bottom: 1rem; }
     .error { color: #fca5a5; }
   </style>
@@ -122,6 +128,18 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     <section id="settings" class="panel">
       <p class="hint">Strategy and risk limits. Secrets stay in server environment variables.</p>
       <div id="db-warning" class="warn" style="display:none;"></div>
+      <div class="section" id="mode-section">
+        <div class="section-head"><h2>Trading mode</h2><span id="mode-badge"></span></div>
+        <p class="hint" id="mode-hint"></p>
+        <div id="mode-prereqs" class="hint"></div>
+        <div class="mode-controls">
+          <input id="totp-code" inputmode="numeric" autocomplete="one-time-code"
+                 maxlength="6" placeholder="6-digit code" />
+          <button class="primary" id="go-live" type="button">Switch to LIVE</button>
+          <button class="secondary" id="go-paper" type="button">Return to paper</button>
+        </div>
+        <span class="message" id="mode-message"></span>
+      </div>
       <form id="settings-form"></form>
       <div class="actions">
         <button class="primary" id="save-settings" type="button">Save settings</button>
@@ -131,8 +149,6 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   </main>
   <script>
     const fields = [
-      ["paper_trading", "checkbox", "Paper trading"],
-      ["run_mode", "select", "Run mode", ["paper", "live"]],
       ["max_daily_loss", "number", "Max daily loss"],
       ["max_position_per_market", "number", "Max position / market"],
       ["max_total_exposure", "number", "Max total exposure"],
@@ -159,7 +175,100 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     }
 
     document.getElementById("tab-overview").onclick = () => showPanel("overview");
-    document.getElementById("tab-settings").onclick = () => { showPanel("settings"); loadSettings(); };
+    document.getElementById("tab-settings").onclick = () => { showPanel("settings"); loadSettings(); loadMode(); };
+
+    function renderMode(state) {
+      const badge = document.getElementById("mode-badge");
+      const hint = document.getElementById("mode-hint");
+      const prereqs = document.getElementById("mode-prereqs");
+      const goLive = document.getElementById("go-live");
+      const goPaper = document.getElementById("go-paper");
+      const isLive = state.mode === "live";
+      badge.textContent = isLive ? "LIVE" : "PAPER";
+      badge.className = "badge " + (isLive ? "mode-badge-live" : "mode-badge-paper");
+      hint.textContent = isLive
+        ? "Live mode is active. Switching to paper is immediate and needs no code."
+        : "Paper mode. Switching to live requires a code from your authenticator app.";
+      const p = state.prerequisites || {};
+      const rows = [
+        ["Authenticator configured", p.totp_configured],
+        ["LIVE_TRADING_CONFIRMED", p.live_trading_confirmed],
+        ["Wallet credentials", p.wallet_configured],
+        ["Live execution implemented", p.execution_implemented],
+      ];
+      prereqs.innerHTML = rows
+        .map(([label, ok]) => (ok ? "✅ " : "❌ ") + escapeHtml(label))
+        .join(" &nbsp; ");
+      goLive.disabled = isLive || !state.can_go_live;
+      goPaper.disabled = !isLive;
+    }
+
+    async function loadMode() {
+      const msg = document.getElementById("mode-message");
+      msg.className = "message";
+      msg.textContent = "";
+      try {
+        const res = await fetch("/trading/mode");
+        const body = await readJsonResponse(res);
+        if (!res.ok) {
+          msg.className = "message error";
+          msg.textContent = typeof body.detail === "string" ? body.detail : "Could not load trading mode.";
+          return;
+        }
+        renderMode(body);
+      } catch (err) {
+        msg.className = "message error";
+        msg.textContent = String(err && err.message || err);
+      }
+    }
+
+    async function goLive() {
+      const msg = document.getElementById("mode-message");
+      const code = (document.getElementById("totp-code").value || "").trim();
+      if (!/^[0-9]{6}$/.test(code)) {
+        msg.className = "message error";
+        msg.textContent = "Enter the 6-digit code from your authenticator app.";
+        return;
+      }
+      if (!confirm("Switch to LIVE trading? This enables real-money order placement once execution is implemented.")) {
+        return;
+      }
+      msg.className = "message";
+      msg.textContent = "Verifying...";
+      const res = await fetch("/trading/mode/live", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ code }),
+      });
+      const body = await readJsonResponse(res);
+      document.getElementById("totp-code").value = "";
+      if (!res.ok) {
+        msg.className = "message error";
+        msg.textContent = typeof body.detail === "string" ? body.detail : ("Switch failed (" + res.status + ").");
+        return;
+      }
+      msg.className = "message";
+      msg.textContent = body.warning || "Switched to LIVE.";
+      renderMode(body);
+    }
+
+    async function goPaper() {
+      const msg = document.getElementById("mode-message");
+      msg.className = "message";
+      msg.textContent = "Switching...";
+      const res = await fetch("/trading/mode/paper", { method: "POST" });
+      const body = await readJsonResponse(res);
+      if (!res.ok) {
+        msg.className = "message error";
+        msg.textContent = typeof body.detail === "string" ? body.detail : ("Switch failed (" + res.status + ").");
+        return;
+      }
+      msg.textContent = "Switched to paper.";
+      renderMode(body);
+    }
+
+    document.getElementById("go-live").onclick = goLive;
+    document.getElementById("go-paper").onclick = goPaper;
 
     function buildSettingsForm(data) {
       const form = document.getElementById("settings-form");

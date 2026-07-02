@@ -33,6 +33,8 @@ class Settings(BaseSettings):
     polymarket_api_passphrase: str | None = None
     polymarket_private_key: str | None = None
     polymarket_funder_address: str | None = None
+    # Base32 TOTP secret used to confirm the paper -> live switch from the dashboard.
+    live_totp_secret: str | None = None
     polymarket_chain_id: int = 137
     signature_type: int = 0
 

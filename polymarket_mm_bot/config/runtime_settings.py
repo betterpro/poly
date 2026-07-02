@@ -120,20 +120,35 @@ def save_editable_settings(payload: EditableBotSettings, session: Session | None
 
 
 def _save(payload: EditableBotSettings, session: Session) -> EditableBotSettings:
-    preserved_config_keys = ("daily_pnl_tracking", "trading_control")
+    preserved_config_keys = (
+        "daily_pnl_tracking",
+        "trading_control",
+        "live_totp_last_counter",
+        "mode_change",
+    )
     try:
         row = session.get(BotConfigRow, 1)
+        existing = dict(row.config_json) if row is not None and row.config_json else {}
         preserved: dict = {}
-        if row is not None and row.config_json:
-            for key in preserved_config_keys:
-                value = row.config_json.get(key)
-                if value is not None:
-                    preserved[key] = value
+        for key in preserved_config_keys:
+            value = existing.get(key)
+            if value is not None:
+                preserved[key] = value
+
+        # Trading mode is controlled ONLY through the TOTP-gated /trading/mode
+        # endpoints. A plain settings save can never flip paper <-> live.
+        base = get_settings()
+        forced_paper = bool(existing.get("paper_trading", base.paper_trading))
+        forced_run_mode = str(existing.get("run_mode", base.run_mode))
+        payload.paper_trading = forced_paper
+        payload.run_mode = forced_run_mode
+
+        data = payload.model_dump()
         if row is None:
-            row = BotConfigRow(id=1, config_json={**payload.model_dump(), **preserved})
+            row = BotConfigRow(id=1, config_json={**data, **preserved})
             session.add(row)
         else:
-            row.config_json = {**payload.model_dump(), **preserved}
+            row.config_json = {**data, **preserved}
         session.commit()
     except Exception:
         session.rollback()
