@@ -521,13 +521,18 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       const resumeBtn = document.getElementById("resume-trading");
       const note = document.getElementById("trading-control-note");
       const enabled = health.trading_enabled !== false;
+      const botActive = health.bot_trading_enabled !== false;
       stopBtn.style.display = enabled ? "" : "none";
       resumeBtn.style.display = enabled ? "none" : "";
       const when = fmtDateTime(health.trading_updated_at);
-      if (enabled) {
-        note.textContent = when ? `Trading active · updated ${when}` : "Trading active — quoting and fills enabled.";
-      } else {
+      if (!enabled) {
         note.textContent = when ? `Trading paused · updated ${when}` : "Trading paused — no new quotes or fills.";
+      } else if (!botActive) {
+        note.textContent = when
+          ? `Resume requested · waiting for bot sync · updated ${when}`
+          : "Resume requested — waiting for bot sync.";
+      } else {
+        note.textContent = when ? `Trading active · updated ${when}` : "Trading active — quoting and fills enabled.";
       }
     }
 
@@ -565,6 +570,11 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       const portfolioTotal = Number.isFinite(total) ? total : realized + unrealized;
       const daily = Number(pnl.daily_pnl) || 0;
       const portfolioSub = isPaper ? "paper · realized + unrealized" : "realized + unrealized";
+      const openPositionCount = (positions || []).filter((p) => Number(p.yes_size) > 0 || Number(p.no_size) > 0).length;
+      const missingMarks = (positions || []).filter((p) => p.mark_missing).length;
+      const positionSub = missingMarks
+        ? `${openPositionCount} open, ${missingMarks} missing mark`
+        : `${openPositionCount} open`;
       const cards = [
         ["Bot status", health.status || "idle", "neutral", ""],
         ["Portfolio PnL", fmtMoney(portfolioTotal), pnlClass(portfolioTotal), portfolioSub],
@@ -572,8 +582,8 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         ["Realized", fmtMoney(realized), pnlClass(realized), "closed trades"],
         ["Unrealized", fmtMoney(unrealized), pnlClass(unrealized), "open positions"],
         ["Markets", String((markets || []).length), "neutral", ""],
-        ["Open orders", String((orders || []).length), "neutral", ""],
-        ["Positions", String((positions || []).length), "neutral", ""],
+        ["Open orders", String((orders || []).length), "neutral", "open + partial"],
+        ["Positions", String((positions || []).length), "neutral", positionSub],
         ["Risk events", String((risk || []).length), "neutral", ""],
       ];
       row.innerHTML = cards.map(([label, value, cls, sub]) =>
@@ -628,7 +638,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
     function renderOrders(orders, marketsById) {
       const wrap = document.getElementById("orders-wrap");
-      document.getElementById("orders-count").textContent = `${(orders || []).length} total`;
+      document.getElementById("orders-count").textContent = `${(orders || []).length} open`;
       if (!orders || !orders.length) {
         wrap.innerHTML = '<div class="empty">No open orders.</div>';
         return;
@@ -643,22 +653,26 @@ DASHBOARD_HTML = """<!DOCTYPE html>
           <td class="num">${fmtPct(o.price)}</td>
           <td class="num">${fmtNum(o.size)}</td>
           <td class="num">${fmtNum(o.filled_size)}</td>
+          <td class="num">${fmtNum(o.remaining_size ?? (o.size - o.filled_size))}</td>
+          <td class="num">${fmtMoney(o.remaining_notional ?? ((o.size - o.filled_size) * o.price))}</td>
           <td><span class="status-pill ${escapeHtml(status)}">${escapeHtml(status.replaceAll("_", " "))}</span></td>
         </tr>`;
       }).join("");
       wrap.innerHTML = `<table class="data"><thead><tr>
-        <th>Market</th><th>Side</th><th>Price</th><th>Size</th><th>Filled</th><th>Status</th>
+        <th>Market</th><th>Side</th><th>Price</th><th>Size</th><th>Filled</th><th>Remaining</th><th>Open value</th><th>Status</th>
       </tr></thead><tbody>${rows}</tbody></table>`;
     }
 
     function renderPositions(positions, marketsById) {
       const wrap = document.getElementById("positions-wrap");
-      document.getElementById("positions-count").textContent = `${(positions || []).length} total`;
+      const openCount = (positions || []).filter((p) => Number(p.yes_size) > 0 || Number(p.no_size) > 0).length;
+      document.getElementById("positions-count").textContent = `${openCount} open / ${(positions || []).length} records`;
       if (!positions || !positions.length) {
-        wrap.innerHTML = '<div class="empty">No open positions.</div>';
+        wrap.innerHTML = '<div class="empty">No position records.</div>';
         return;
       }
       const rows = positions.map((p) => {
+        const mark = p.mark_price == null ? (p.mark_missing ? "missing" : "--") : fmtPct(p.mark_price);
         const market = marketsById.get(p.market_id);
         const label = market?.question || p.market_id?.slice(0, 10) + "…";
         return `<tr>
@@ -666,13 +680,15 @@ DASHBOARD_HTML = """<!DOCTYPE html>
           <td class="num">${fmtNum(p.yes_size)}</td>
           <td class="num">${fmtNum(p.no_size)}</td>
           <td class="num">${fmtNum(p.net_yes ?? (p.yes_size - p.no_size))}</td>
+          <td class="num">${fmtMoney(p.gross_exposure ?? 0)}</td>
+          <td class="num">${escapeHtml(mark)}</td>
           <td class="num ${pnlClass(p.realized_pnl)}">${fmtMoney(p.realized_pnl)}</td>
           <td class="num ${pnlClass(p.unrealized_pnl)}">${fmtMoney(p.unrealized_pnl ?? 0)}</td>
           <td class="num ${pnlClass(p.total_pnl ?? p.realized_pnl)}">${fmtMoney(p.total_pnl ?? p.realized_pnl)}</td>
         </tr>`;
       }).join("");
       wrap.innerHTML = `<table class="data"><thead><tr>
-        <th>Market</th><th>Yes</th><th>No</th><th>Net yes</th><th>Realized</th><th>Unrealized</th><th>Total</th>
+        <th>Market</th><th>Yes</th><th>No</th><th>Net yes</th><th>Exposure</th><th>Mark</th><th>Realized</th><th>Unrealized</th><th>Total</th>
       </tr></thead><tbody>${rows}</tbody></table>`;
     }
 
@@ -684,7 +700,9 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         return;
       }
       list.innerHTML = risk.slice().reverse().slice(0, 10).map((evt) => {
-        const msg = evt.message || evt.reason || evt.event || JSON.stringify(evt);
+        const market = evt.market_id ? `Market ${String(evt.market_id).slice(0, 10)}...` : "Portfolio";
+        const code = evt.code || evt.reason || evt.event || "risk_event";
+        const msg = evt.message || `${market}: ${code}`;
         const when = evt.timestamp || evt.created_at || "";
         return `<li class="risk-item">${escapeHtml(msg)}${when ? `<time>${escapeHtml(fmtDate(when))}</time>` : ""}</li>`;
       }).join("");

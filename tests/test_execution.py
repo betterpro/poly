@@ -54,6 +54,15 @@ async def test_sell_fill_requires_inventory(settings, book):
     assert inventory.get_position("m1").yes_size == 0
 
 
+async def test_sell_order_without_inventory_is_rejected(settings):
+    inventory = InventoryManager(settings)
+    risk = RiskEngine(settings, inventory)
+    execution = PaperExecutionEngine(settings, inventory, risk)
+    order = await execution.create_order("m1", Side.SELL, 0.55, 10, "yes-token")
+    assert order.status == "rejected"
+    assert order.client_order_id not in execution.orders
+
+
 async def test_cancel_all_open_orders(settings):
     inventory = InventoryManager(settings)
     risk = RiskEngine(settings, inventory)

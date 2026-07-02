@@ -26,7 +26,6 @@ from polymarket_mm_bot.dashboard.snapshot_cache import (
 )
 from polymarket_mm_bot.dashboard.pnl_baseline import load_daily_pnl_tracking, reset_daily_pnl_baseline
 from polymarket_mm_bot.dashboard.trading_control import load_trading_control, resume_trading, stop_trading
-from polymarket_mm_bot.dashboard.status_store import load_status_snapshot
 from polymarket_mm_bot.dashboard.startup import ensure_schema
 from polymarket_mm_bot.utils import market_dict_matches_categories
 
@@ -73,6 +72,54 @@ def _filter_markets(markets: list[dict[str, Any]], allowed_categories: list[str]
     return filtered
 
 
+def _as_float(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _normalize_order_payload(order: dict[str, Any]) -> dict[str, Any]:
+    payload = dict(order)
+    size = _as_float(payload.get("size"))
+    filled = _as_float(payload.get("filled_size"))
+    price = _as_float(payload.get("price"))
+    remaining = max(size - filled, 0.0)
+    payload["remaining_size"] = round(_as_float(payload.get("remaining_size"), remaining), 6)
+    payload["notional"] = round(_as_float(payload.get("notional"), size * price), 6)
+    payload["filled_notional"] = round(_as_float(payload.get("filled_notional"), filled * price), 6)
+    payload["remaining_notional"] = round(_as_float(payload.get("remaining_notional"), remaining * price), 6)
+    return payload
+
+
+def _normalize_position_payload(position: dict[str, Any]) -> dict[str, Any]:
+    payload = dict(position)
+    yes_size = _as_float(payload.get("yes_size"))
+    no_size = _as_float(payload.get("no_size"))
+    avg_yes_price = _as_float(payload.get("avg_yes_price"))
+    avg_no_price = _as_float(payload.get("avg_no_price"))
+    realized = _as_float(payload.get("realized_pnl"))
+    unrealized = _as_float(payload.get("unrealized_pnl"))
+    payload["net_yes"] = round(_as_float(payload.get("net_yes"), yes_size - no_size), 6)
+    payload["gross_exposure"] = round(
+        _as_float(payload.get("gross_exposure"), abs(yes_size * avg_yes_price) + abs(no_size * avg_no_price)),
+        6,
+    )
+    payload["unrealized_pnl"] = round(unrealized, 4)
+    payload["total_pnl"] = round(_as_float(payload.get("total_pnl"), realized + unrealized), 4)
+    payload["mark_missing"] = bool(payload.get("mark_missing", False))
+    return payload
+
+
+def _normalized_pnl(snapshot: dict[str, Any]) -> dict[str, float]:
+    realized = _as_float(snapshot.get("realized_pnl"))
+    unrealized = _as_float(snapshot.get("unrealized_pnl"))
+    total = _as_float(snapshot.get("total_pnl"), realized + unrealized)
+    if abs(total - (realized + unrealized)) > 0.001:
+        total = realized + unrealized
+    return {"realized": realized, "unrealized": unrealized, "total": total}
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     ensure_schema()
@@ -114,6 +161,7 @@ def create_app() -> FastAPI:
         allowed = snapshot.get("allowed_categories") or settings.allowed_categories
         age = cache_age_seconds()
         control = load_trading_control()
+        trading_enabled = control.get("enabled", True)
         return {
             "ok": True,
             "status": snapshot.get("bot_status", "idle"),
@@ -121,7 +169,8 @@ def create_app() -> FastAPI:
             "allowed_categories": allowed,
             "updated_at": snapshot.get("updated_at"),
             "snapshot_age_seconds": age,
-            "trading_enabled": snapshot.get("trading_enabled", control.get("enabled", True)),
+            "trading_enabled": trading_enabled,
+            "bot_trading_enabled": snapshot.get("trading_enabled", trading_enabled),
             "trading_updated_at": control.get("updated_at"),
         }
 
@@ -184,23 +233,26 @@ def create_app() -> FastAPI:
 
     @app.get("/positions")
     async def positions():
-        return _status().get("positions", [])
+        return [_normalize_position_payload(position) for position in _status().get("positions", [])]
 
     @app.get("/orders")
     async def orders():
-        return _status().get("orders", [])
+        return [_normalize_order_payload(order) for order in _status().get("orders", [])]
 
     @app.get("/pnl")
     async def pnl() -> dict:
         snapshot = _status()
-        realized = float(snapshot.get("realized_pnl", 0.0) or 0.0)
-        unrealized = float(snapshot.get("unrealized_pnl", 0.0) or 0.0)
-        total = float(snapshot.get("total_pnl", realized + unrealized) or 0.0)
-        if abs(total - (realized + unrealized)) > 0.001:
-            total = realized + unrealized
+        pnl_values = _normalized_pnl(snapshot)
+        realized = pnl_values["realized"]
+        unrealized = pnl_values["unrealized"]
+        total = pnl_values["total"]
         tracking = load_daily_pnl_tracking()
+        if tracking and tracking.get("baseline") is not None:
+            daily_pnl = total - _as_float(tracking.get("baseline"))
+        else:
+            daily_pnl = _as_float(snapshot.get("daily_pnl"))
         return {
-            "daily_pnl": snapshot.get("daily_pnl", 0.0),
+            "daily_pnl": daily_pnl,
             "total_pnl": total,
             "realized_pnl": realized,
             "unrealized_pnl": unrealized,
@@ -213,11 +265,10 @@ def create_app() -> FastAPI:
         if not database_ok():
             raise HTTPException(status_code=503, detail="Database unreachable.")
         snapshot = _status()
-        realized = float(snapshot.get("realized_pnl", 0.0) or 0.0)
-        unrealized = float(snapshot.get("unrealized_pnl", 0.0) or 0.0)
-        total = float(snapshot.get("total_pnl", realized + unrealized) or 0.0)
-        if abs(total - (realized + unrealized)) > 0.001:
-            total = realized + unrealized
+        pnl_values = _normalized_pnl(snapshot)
+        realized = pnl_values["realized"]
+        unrealized = pnl_values["unrealized"]
+        total = pnl_values["total"]
         try:
             result = reset_daily_pnl_baseline(total)
         except Exception as exc:

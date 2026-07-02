@@ -5,7 +5,7 @@ import structlog
 
 from polymarket_mm_bot.config import Settings
 from polymarket_mm_bot.models import Market, MarketScore, OrderBook, Trade
-from polymarket_mm_bot.utils import clamp, event_belongs_to_category, market_dict_matches_categories
+from polymarket_mm_bot.utils import clamp, market_dict_matches_categories
 
 logger = structlog.get_logger()
 

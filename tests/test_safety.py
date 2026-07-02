@@ -67,8 +67,8 @@ def test_positions_persist_across_restart(tmp_path, monkeypatch):
     monkeypatch.setenv("DATABASE_URL", f"sqlite+pysqlite:///{db.as_posix()}")
     from polymarket_mm_bot.config.settings import Settings, get_settings
     from polymarket_mm_bot.database.orm import Base
-    from polymarket_mm_bot.database.session import get_engine
-    from polymarket_mm_bot.inventory.store import load_positions, save_positions
+    from polymarket_mm_bot.database.runtime_state import load_positions, save_position
+    from polymarket_mm_bot.database.session import get_engine, get_session_factory
 
     get_settings.cache_clear()
     Base.metadata.create_all(get_engine())
@@ -79,12 +79,13 @@ def test_positions_persist_across_restart(tmp_path, monkeypatch):
     position.yes_size = 12
     position.avg_yes_price = 0.4
     position.realized_pnl = 3.5
-    save_positions(inventory)
+    factory = get_session_factory(settings)
+    with factory() as session:
+        save_position(session, position)
 
-    # Simulate a fresh process.
-    reloaded = InventoryManager(settings)
-    load_positions(reloaded)
-    restored = reloaded.get_position("m1")
+    # Simulate a fresh process reloading persisted state.
+    with factory() as session:
+        restored = load_positions(session)["m1"]
     assert restored.yes_size == 12
     assert restored.avg_yes_price == pytest.approx(0.4)
     assert restored.realized_pnl == pytest.approx(3.5)

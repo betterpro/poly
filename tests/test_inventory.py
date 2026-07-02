@@ -21,3 +21,14 @@ def test_inventory_unrealized_pnl(settings):
     assert realized == 0.0
     assert round(unrealized, 2) == 0.5
     assert round(total, 2) == 0.5
+
+
+def test_portfolio_pnl_ignores_mark_prices_without_positions(settings):
+    inventory = InventoryManager(settings)
+    realized, unrealized, total = inventory.portfolio_pnl(
+        {"selected-no-book": 0.55, "another-ghost": 0.60}
+    )
+    assert realized == 0.0
+    assert unrealized == 0.0
+    assert total == 0.0
+    assert list(inventory.positions.keys()) == []
