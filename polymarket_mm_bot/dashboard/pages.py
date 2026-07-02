@@ -21,7 +21,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     .stat { background: #111827; border: 1px solid #1f2937; border-radius: 12px; padding: 0.9rem 1rem; }
     .stat-label { color: #94a3b8; font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 0.35rem; }
     .stat-sub { color: #64748b; font-size: 0.72rem; margin-top: 0.25rem; font-weight: 400; text-transform: none; letter-spacing: normal; }
-    .stat-value { font-size: 1.35rem; font-weight: 600; }
+    .stat-value { font-size: 1.35rem; font-weight: 600; overflow-wrap: anywhere; }
     .stat-value.positive { color: #4ade80; }
     .stat-value.negative { color: #f87171; }
     .stat-value.neutral { color: #e5e7eb; }
@@ -29,6 +29,13 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     .section-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.65rem; }
     .section-head h2 { margin: 0; font-size: 1rem; font-weight: 600; color: #f1f5f9; }
     .section-head span { color: #64748b; font-size: 0.85rem; }
+    .section-desc { color: #64748b; font-size: 0.82rem; margin: -0.35rem 0 0.7rem; line-height: 1.4; }
+    .stat-label .info { cursor: help; color: #475569; margin-left: 0.2rem; }
+    .side-buy { color: #4ade80; font-weight: 600; }
+    .side-sell { color: #f87171; font-weight: 600; }
+    .legend { display: flex; flex-wrap: wrap; gap: 0.5rem 1.25rem; color: #64748b; font-size: 0.78rem; margin: 0.5rem 0 0; }
+    .legend b { color: #94a3b8; font-weight: 600; }
+    th[title] { cursor: help; border-bottom: 1px dotted #475569; }
     .card-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 0.75rem; }
     .market-card { background: #111827; border: 1px solid #1f2937; border-radius: 12px; padding: 1rem; display: flex; flex-direction: column; gap: 0.65rem; }
     .market-card h3 { margin: 0; font-size: 0.95rem; line-height: 1.35; color: #f8fafc; }
@@ -108,19 +115,28 @@ DASHBOARD_HTML = """<!DOCTYPE html>
           <span class="pnl-reset-note" id="pnl-reset-note"></span>
         </div>
         <div class="section">
-          <div class="section-head"><h2>Selected markets</h2><span id="markets-count"></span></div>
-          <div class="card-grid" id="markets-grid"></div>
+          <div class="section-head"><h2>Recent trades</h2><span id="trades-count"></span></div>
+          <p class="section-desc">Each row is a fill — a moment the bot actually bought or sold shares. <b class="side-buy">BUY</b> adds to a position, <b class="side-sell">SELL</b> reduces it. Price is per share in cents (0–100¢); a YES share pays $1 if the outcome happens. Value = shares × price.</p>
+          <div id="trades-wrap"></div>
         </div>
         <div class="section">
           <div class="section-head"><h2>Open orders</h2><span id="orders-count"></span></div>
+          <p class="section-desc">Quotes the bot currently has resting on the book, waiting to be filled. "Filled" shows how much has traded so far; "Remaining" is still working. These are intentions, not trades yet — a trade appears above once one fills.</p>
           <div id="orders-wrap"></div>
         </div>
         <div class="section">
           <div class="section-head"><h2>Positions</h2><span id="positions-count"></span></div>
+          <p class="section-desc">What the bot is holding right now, per market, after all fills. <b>Net yes</b> = YES shares minus NO shares. <b>Mark</b> is the current fair price used to value the position. <b>Realized</b> is locked-in profit from closed shares; <b>Unrealized</b> is paper profit on what's still held.</p>
           <div id="positions-wrap"></div>
         </div>
         <div class="section">
+          <div class="section-head"><h2>Selected markets</h2><span id="markets-count"></span></div>
+          <p class="section-desc">Markets that passed the scanner and where the bot is quoting. "Bot buy/sell" are the prices it is currently offering.</p>
+          <div class="card-grid" id="markets-grid"></div>
+        </div>
+        <div class="section">
           <div class="section-head"><h2>Risk events</h2><span id="risk-count"></span></div>
+          <p class="section-desc">Times a safety rule blocked or paused trading (e.g. exposure caps, stale data, daily-loss limit). Frequent events here explain why the bot may not be quoting.</p>
           <ul class="risk-list" id="risk-list"></ul>
         </div>
       </div>
@@ -561,7 +577,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     document.getElementById("stop-trading").onclick = () => setTradingEnabled(false);
     document.getElementById("resume-trading").onclick = () => setTradingEnabled(true);
 
-    function renderStats(health, pnl, markets, orders, positions, risk) {
+    function renderStats(health, pnl, markets, orders, positions, risk, fills) {
       const row = document.getElementById("stats-row");
       const isPaper = String(health.mode_warning || "").toLowerCase().includes("paper");
       const realized = Number(pnl.realized_pnl) || 0;
@@ -575,19 +591,22 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       const positionSub = missingMarks
         ? `${openPositionCount} open, ${missingMarks} missing mark`
         : `${openPositionCount} open`;
+      // [label, value, class, sub, tooltip]
       const cards = [
-        ["Bot status", health.status || "idle", "neutral", ""],
-        ["Portfolio PnL", fmtMoney(portfolioTotal), pnlClass(portfolioTotal), portfolioSub],
-        ["Today's change", fmtMoney(daily), pnlClass(daily), "since last reset"],
-        ["Realized", fmtMoney(realized), pnlClass(realized), "closed trades"],
-        ["Unrealized", fmtMoney(unrealized), pnlClass(unrealized), "open positions"],
-        ["Markets", String((markets || []).length), "neutral", ""],
-        ["Open orders", String((orders || []).length), "neutral", "open + partial"],
-        ["Positions", String((positions || []).length), "neutral", positionSub],
-        ["Risk events", String((risk || []).length), "neutral", ""],
+        ["Bot status", String(health.status || "idle").replaceAll("_", " "), "neutral", "", "What the bot is doing right now. paper trading/live trading = quoting; trading paused/risk paused/live unavailable = not trading."],
+        ["Portfolio PnL", fmtMoney(portfolioTotal), pnlClass(portfolioTotal), portfolioSub, "Total profit/loss since start: realized (closed) plus unrealized (open, marked to current price)."],
+        ["Today's change", fmtMoney(daily), pnlClass(daily), "since last reset", "How much PnL moved since the daily baseline was last reset."],
+        ["Realized", fmtMoney(realized), pnlClass(realized), "closed trades", "Locked-in profit/loss from shares that have been sold/closed."],
+        ["Unrealized", fmtMoney(unrealized), pnlClass(unrealized), "open positions", "Paper profit/loss on shares still held, valued at the current mark price."],
+        ["Trades", String((fills || []).length), "neutral", "recent fills", "Number of fills (actual buys/sells) in the recent trade feed below."],
+        ["Open orders", String((orders || []).length), "neutral", "open + partial", "Quotes resting on the book, not yet fully filled."],
+        ["Positions", String((positions || []).length), "neutral", positionSub, "Markets the bot currently holds shares in."],
+        ["Markets", String((markets || []).length), "neutral", "quoting", "Markets that passed the scanner and are being quoted."],
+        ["Risk events", String((risk || []).length), "neutral", "recent", "How many times a safety rule blocked or paused trading recently."],
       ];
-      row.innerHTML = cards.map(([label, value, cls, sub]) =>
-        `<div class="stat"><div class="stat-label">${escapeHtml(label)}</div>`
+      row.innerHTML = cards.map(([label, value, cls, sub, tip]) =>
+        `<div class="stat" ${tip ? `title="${escapeHtml(tip)}"` : ""}>`
+        + `<div class="stat-label">${escapeHtml(label)}${tip ? '<span class="info">ⓘ</span>' : ""}</div>`
         + `<div class="stat-value ${cls}">${escapeHtml(value)}</div>`
         + (sub ? `<div class="stat-sub">${escapeHtml(sub)}</div>` : "")
         + `</div>`
@@ -636,6 +655,47 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       }).join("");
     }
 
+    function fmtTime(value) {
+      if (!value) return "—";
+      const d = new Date(value);
+      return Number.isNaN(d.getTime()) ? "—" : d.toLocaleTimeString();
+    }
+
+    function renderTrades(fills, marketsById) {
+      const wrap = document.getElementById("trades-wrap");
+      document.getElementById("trades-count").textContent = `${(fills || []).length} recent`;
+      if (!fills || !fills.length) {
+        wrap.innerHTML = '<div class="empty">No fills yet. When a resting order trades, it shows up here.</div>';
+        return;
+      }
+      const rows = fills.map((f) => {
+        const market = marketsById.get(f.market_id);
+        const label = market?.question || (f.market_id ? String(f.market_id).slice(0, 10) + "…" : "—");
+        const side = String(f.side || "").toLowerCase();
+        const sideCls = side === "buy" ? "side-buy" : "side-sell";
+        const status = String(f.status || "").toLowerCase();
+        const action = `${side.toUpperCase()} ${String(f.outcome || "").toUpperCase()}`.trim();
+        return `<tr>
+          <td>${escapeHtml(fmtTime(f.at))}</td>
+          <td>${escapeHtml(label)}</td>
+          <td class="${sideCls}">${escapeHtml(action)}</td>
+          <td class="num">${fmtPct(f.price)}</td>
+          <td class="num">${fmtNum(f.size)}</td>
+          <td class="num">${fmtMoney(f.value ?? (Number(f.size) * Number(f.price)))}</td>
+          <td><span class="status-pill ${escapeHtml(status)}">${escapeHtml(status.replaceAll("_", " "))}</span></td>
+        </tr>`;
+      }).join("");
+      wrap.innerHTML = `<table class="data"><thead><tr>
+        <th title="When this fill happened">Time</th>
+        <th>Market</th>
+        <th title="BUY adds shares, SELL reduces them. YES/NO is which outcome the share is on.">Action</th>
+        <th title="Price paid per share, in cents (0–100¢)">Price</th>
+        <th title="Number of shares that traded in this fill">Shares</th>
+        <th title="Shares × price — the cash that changed hands">Value</th>
+        <th title="The order's state after this fill">Order</th>
+      </tr></thead><tbody>${rows}</tbody></table>`;
+    }
+
     function renderOrders(orders, marketsById) {
       const wrap = document.getElementById("orders-wrap");
       document.getElementById("orders-count").textContent = `${(orders || []).length} open`;
@@ -659,7 +719,14 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         </tr>`;
       }).join("");
       wrap.innerHTML = `<table class="data"><thead><tr>
-        <th>Market</th><th>Side</th><th>Price</th><th>Size</th><th>Filled</th><th>Remaining</th><th>Open value</th><th>Status</th>
+        <th>Market</th>
+        <th title="BUY = bid, SELL = ask">Side</th>
+        <th title="Quoted price per share, in cents (0–100¢)">Price</th>
+        <th title="Total shares the order is for">Size</th>
+        <th title="Shares filled so far">Filled</th>
+        <th title="Shares still waiting to fill">Remaining</th>
+        <th title="Remaining shares × price — cash still working">Open value</th>
+        <th title="open = resting, partially filled = some traded">Status</th>
       </tr></thead><tbody>${rows}</tbody></table>`;
     }
 
@@ -688,7 +755,15 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         </tr>`;
       }).join("");
       wrap.innerHTML = `<table class="data"><thead><tr>
-        <th>Market</th><th>Yes</th><th>No</th><th>Net yes</th><th>Exposure</th><th>Mark</th><th>Realized</th><th>Unrealized</th><th>Total</th>
+        <th>Market</th>
+        <th title="YES shares held">Yes</th>
+        <th title="NO shares held">No</th>
+        <th title="YES minus NO — net directional exposure">Net yes</th>
+        <th title="Cash value currently at risk in this market">Exposure</th>
+        <th title="Current fair price used to value the position (cents)">Mark</th>
+        <th title="Locked-in profit/loss from closed shares">Realized</th>
+        <th title="Paper profit/loss on shares still held">Unrealized</th>
+        <th title="Realized + unrealized for this market">Total</th>
       </tr></thead><tbody>${rows}</tbody></table>`;
     }
 
@@ -709,13 +784,14 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     }
 
     async function refreshOverview() {
-      const [health, markets, positions, orders, pnl, risk] = await Promise.all([
+      const [health, markets, positions, orders, pnl, risk, fills] = await Promise.all([
         fetch("/health").then(r => r.json()),
         fetch("/selected-markets").then(r => r.json()),
         fetch("/positions").then(r => r.json()),
         fetch("/orders").then(r => r.json()),
         fetch("/pnl").then(r => r.json()),
         fetch("/risk-events").then(r => r.json()),
+        fetch("/fills").then(r => r.json()),
       ]);
       document.getElementById("mode").innerText = health.mode_warning || health.status;
       const categories = (health.allowed_categories || []).join(", ");
@@ -739,9 +815,10 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         hint.textContent = text;
       }
       const marketsById = marketLookup(markets);
-      renderStats(health, pnl, markets, orders, positions, risk);
+      renderStats(health, pnl, markets, orders, positions, risk, fills);
       updateTradingControls(health);
       updatePnlResetNote(pnl);
+      renderTrades(fills, marketsById);
       renderMarkets(markets);
       renderOrders(orders, marketsById);
       renderPositions(positions, marketsById);

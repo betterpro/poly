@@ -20,6 +20,28 @@ logger = structlog.get_logger()
 # wallet credentials, the TOTP switch, and a passing preflight before it can arm.
 LIVE_EXECUTION_IMPLEMENTED = True
 
+# Keep at most this many recent fills in memory for the dashboard trade feed.
+_MAX_RECENT_FILLS = 200
+
+
+def record_fill(store: list[dict], order: BotOrder, size: float, price: float) -> None:
+    """Append a fill event to a rolling in-memory feed (newest last)."""
+    store.append(
+        {
+            "order_id": order.client_order_id,
+            "market_id": order.market_id,
+            "side": order.side.value,
+            "outcome": order.outcome.value,
+            "price": round(price, 6),
+            "size": round(size, 6),
+            "value": round(size * price, 6),
+            "status": order.status.value,
+            "at": datetime.now(UTC).isoformat(),
+        }
+    )
+    if len(store) > _MAX_RECENT_FILLS:
+        del store[: len(store) - _MAX_RECENT_FILLS]
+
 
 class ExecutionEngine(Protocol):
     orders: dict[str, BotOrder]
@@ -49,6 +71,7 @@ class PaperExecutionEngine:
         self.risk = risk
         self.orders: dict[str, BotOrder] = orders or {}
         self.session_factory = session_factory
+        self.recent_fills: list[dict] = []
 
     def _persist_order(self, order: BotOrder) -> None:
         if self.session_factory is None:
@@ -132,6 +155,7 @@ class PaperExecutionEngine:
             self.inventory.apply_fill(order, fill_size, order.price)
             self._persist_order(order)
             self._persist_position(order.market_id)
+            record_fill(self.recent_fills, order, fill_size, order.price)
             filled.append(order)
             logger.info("fill_received", client_order_id=order.client_order_id, fill_size=fill_size, price=order.price)
         return filled
@@ -185,6 +209,7 @@ class LiveExecutionEngine:
         self.risk = risk
         self.orders: dict[str, BotOrder] = orders or {}
         self.session_factory = session_factory
+        self.recent_fills: list[dict] = []
         self._gateway_impl = gateway
         # Track matched (size, notional) per order id so reconciliation applies only
         # incremental fills and never double-counts across restarts.
@@ -367,5 +392,6 @@ class LiveExecutionEngine:
             self._persist_order(order)
             if filled_changed:
                 self._persist_position(order.market_id)
+                record_fill(self.recent_fills, order, delta_size, fill_price)
                 updated.append(order)
         return updated

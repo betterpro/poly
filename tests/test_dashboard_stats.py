@@ -3,6 +3,25 @@ from fastapi.testclient import TestClient
 from polymarket_mm_bot.dashboard import app as dashboard_app
 
 
+def test_fills_endpoint_returns_newest_first(monkeypatch):
+    snapshot = {
+        "recent_fills": [
+            {"order_id": "a", "market_id": "m1", "side": "buy", "size": 4, "price": 0.5, "at": "2026-07-01T00:00:00+00:00"},
+            {"order_id": "b", "market_id": "m1", "side": "sell", "size": 2, "price": 0.6, "at": "2026-07-01T00:01:00+00:00"},
+        ]
+    }
+    monkeypatch.setattr(dashboard_app, "_status", lambda: snapshot)
+    monkeypatch.setenv("DASHBOARD_PASSWORD", "secret")
+    from polymarket_mm_bot.config.settings import get_settings
+
+    get_settings.cache_clear()
+    client = TestClient(dashboard_app.create_app())
+    client.auth = ("admin", "secret")
+
+    fills = client.get("/fills").json()
+    assert [f["order_id"] for f in fills] == ["b", "a"]  # newest first
+
+
 def test_dashboard_normalizes_order_and_position_metrics(monkeypatch):
     snapshot = {
         "orders": [

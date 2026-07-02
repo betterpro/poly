@@ -21,6 +21,7 @@ class DashboardState(BaseModel):
     unrealized_pnl: float = 0.0
     daily_pnl_reset_at: str | None = None
     risk_events: list[dict] = Field(default_factory=list)
+    recent_fills: list[dict] = Field(default_factory=list)
     strategy_status: dict[str, str] = Field(default_factory=dict)
 
 

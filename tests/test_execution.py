@@ -14,6 +14,20 @@ async def test_paper_fill_updates_order_and_position(settings, book):
     assert inventory.get_position("m1").yes_size == 10
 
 
+async def test_paper_fill_records_trade_feed(settings, book):
+    inventory = InventoryManager(settings)
+    execution = PaperExecutionEngine(settings, inventory, RiskEngine(settings, inventory))
+    await execution.create_order("m1", Side.BUY, 0.53, 10, "yes-token")
+    await execution.simulate_fills(book)
+    assert len(execution.recent_fills) == 1
+    fill = execution.recent_fills[0]
+    assert fill["market_id"] == "m1"
+    assert fill["side"] == "buy"
+    assert fill["size"] == 10
+    assert fill["value"] == round(10 * fill["price"], 6)
+    assert fill["at"]
+
+
 async def test_passive_buy_at_bid_does_not_fill(settings):
     inventory = InventoryManager(settings)
     risk = RiskEngine(settings, inventory)

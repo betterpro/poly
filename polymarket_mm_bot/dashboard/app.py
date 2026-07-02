@@ -352,6 +352,11 @@ def create_app() -> FastAPI:
             logger.warning("trading_mode_paper_failed", error=str(exc))
             raise HTTPException(status_code=503, detail="Could not switch to paper trading.") from exc
 
+    @app.get("/fills")
+    async def fills():
+        # Newest first for the dashboard trade feed.
+        return list(reversed(_status().get("recent_fills", [])))
+
     @app.get("/risk-events")
     async def risk_events():
         return _status().get("risk_events", [])

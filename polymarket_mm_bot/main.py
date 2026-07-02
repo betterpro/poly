@@ -317,6 +317,7 @@ async def run_once() -> None:
         state.daily_pnl_reset_at = pnl_tracking.get("reset_at")
         risk.update_daily_pnl(state.daily_pnl)
         state.mode_warning = settings.mode_warning
+        state.recent_fills = list(getattr(execution, "recent_fills", []))[-50:]
         save_status_snapshot(
             {
                 "bot_status": state.bot_status,
@@ -343,6 +344,7 @@ async def run_once() -> None:
                 "unrealized_pnl": state.unrealized_pnl,
                 "daily_pnl_reset_at": state.daily_pnl_reset_at,
                 "risk_events": state.risk_events[-50:],
+                "recent_fills": state.recent_fills,
                 "strategy_status": state.strategy_status,
             }
         )
