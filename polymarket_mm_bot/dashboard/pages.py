@@ -64,6 +64,10 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     .status-pill.partially_filled { background: #422006; color: #fde68a; }
     form { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 1rem; }
     label { display: flex; flex-direction: column; gap: 0.35rem; font-size: 0.9rem; color: #cbd5e1; }
+    .field { display: flex; flex-direction: column; gap: 0.35rem; }
+    .field-label { font-size: 0.9rem; color: #cbd5e1; }
+    .field-hint { color: #64748b; font-size: 0.78rem; line-height: 1.35; margin: -0.1rem 0 0.15rem; }
+    .checkbox-row { flex-direction: row; align-items: center; gap: 0.5rem; width: fit-content; cursor: pointer; }
     .field-categories { grid-column: 1 / -1; }
     .category-grid { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-top: 0.25rem; }
     .category-option { flex-direction: row; align-items: center; gap: 0.4rem; background: #111827; border: 1px solid #374151; border-radius: 8px; padding: 0.45rem 0.65rem; cursor: pointer; text-transform: capitalize; }
@@ -181,6 +185,25 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       ["stale_order_seconds", "number", "Stale order seconds"],
     ];
 
+    const fieldHints = {
+      paper_trading: "Simulate quotes and fills only. No real Polymarket orders are sent.",
+      run_mode: "Paper uses the simulator; live sends real orders (requires LIVE_TRADING_CONFIRMED and wallet env vars).",
+      max_daily_loss: "Stop trading when today's PnL falls below this loss, in USD. Resets each calendar day.",
+      max_position_per_market: "Maximum shares held on one side (yes or no) in a single market.",
+      max_total_exposure: "Cap on total capital at risk across all open positions, in USD.",
+      max_order_size: "Largest single order the bot may place, in shares.",
+      max_open_orders: "Maximum number of resting orders allowed at once.",
+      max_markets_traded: "How many markets the scanner may select per cycle.",
+      allowed_categories: "Only trade markets in the selected categories.",
+      min_volume: "Markets below this lifetime volume are filtered out.",
+      min_liquidity: "Minimum order-book depth required for a market to qualify.",
+      min_spread: "Minimum bid-ask spread required; also floors how tight quotes can be.",
+      market_score_threshold: "Minimum scanner score (0–100) required to trade a market.",
+      target_spread: "Width between bid and ask around fair value (e.g. 0.02 = 2¢).",
+      order_size: "Default share count per quote the strategy places.",
+      stale_order_seconds: "Cancel resting orders that remain open longer than this many seconds.",
+    };
+
     let categoryOptions = [];
 
     function showPanel(name) {
@@ -295,14 +318,12 @@ DASHBOARD_HTML = """<!DOCTYPE html>
           const wrap = document.createElement("div");
           wrap.className = "field-categories";
           const title = document.createElement("div");
+          title.className = "field-label";
           title.textContent = label;
-          title.style.color = "#cbd5e1";
-          title.style.fontSize = "0.9rem";
           wrap.appendChild(title);
           const hint = document.createElement("div");
-          hint.className = "hint";
-          hint.style.margin = "0.35rem 0 0";
-          hint.textContent = "Only trade markets in the selected categories.";
+          hint.className = "field-hint";
+          hint.textContent = fieldHints[key] || "";
           wrap.appendChild(hint);
           const box = document.createElement("div");
           box.className = "category-grid";
@@ -323,8 +344,19 @@ DASHBOARD_HTML = """<!DOCTYPE html>
           form.appendChild(wrap);
           continue;
         }
-        const wrap = document.createElement("label");
-        wrap.textContent = label;
+        const wrap = document.createElement("div");
+        wrap.className = "field";
+        const title = document.createElement("div");
+        title.className = "field-label";
+        title.textContent = label;
+        wrap.appendChild(title);
+        const hintText = fieldHints[key];
+        if (hintText) {
+          const hint = document.createElement("div");
+          hint.className = "field-hint";
+          hint.textContent = hintText;
+          wrap.appendChild(hint);
+        }
         let input;
         if (type === "checkbox") {
           input = document.createElement("input");
@@ -345,7 +377,15 @@ DASHBOARD_HTML = """<!DOCTYPE html>
           input.value = data[key];
         }
         input.name = key;
-        wrap.appendChild(input);
+        if (type === "checkbox") {
+          const row = document.createElement("label");
+          row.className = "checkbox-row";
+          row.appendChild(input);
+          row.appendChild(document.createTextNode("Enabled"));
+          wrap.appendChild(row);
+        } else {
+          wrap.appendChild(input);
+        }
         form.appendChild(wrap);
       }
     }
