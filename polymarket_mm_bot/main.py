@@ -13,6 +13,8 @@ from polymarket_mm_bot.dashboard.state import state
 from polymarket_mm_bot.dashboard.status_store import save_status_snapshot
 from polymarket_mm_bot.database.migrate import run_migrations
 from polymarket_mm_bot.data import PolymarketDataClient
+from polymarket_mm_bot.execution.engine import LIVE_EXECUTION_IMPLEMENTED
+from polymarket_mm_bot.inventory.store import save_positions
 from polymarket_mm_bot.logging import configure_logging
 from polymarket_mm_bot.models import Market, OrderBook, OrderStatus, Side
 from polymarket_mm_bot.market_scanner import MarketScanner
@@ -125,18 +127,50 @@ async def run_once() -> None:
     data = PolymarketDataClient(settings)
     state.bot_status = "starting"
     try:
-        markets = await data.fetch_active_markets(categories=settings.allowed_categories)
+        try:
+            markets = await data.fetch_active_markets(categories=settings.allowed_categories)
+        except Exception as exc:
+            decision = risk.record_api_error()
+            logger.error("market_fetch_failed", error=str(exc), api_errors=risk.api_errors)
+            await execution.cancel_all_open_orders()
+            state.bot_status = "api_error_halt" if not decision.allowed else "degraded"
+            state.trading_enabled = False
+            save_status_snapshot(
+                {
+                    "bot_status": state.bot_status,
+                    "trading_enabled": False,
+                    "mode_warning": settings.mode_warning,
+                    "updated_at": datetime.now(UTC).isoformat(),
+                    "api_errors": risk.api_errors,
+                }
+            )
+            return
+        # Successful poll clears the consecutive-error breaker.
+        risk.api_errors = 0
         state.active_markets = markets
         books, trades = await _load_books_and_trades(data, markets)
 
         selected = scanner.select_markets(markets, books, trades)
         state.selected_markets = selected
         trading_enabled = is_trading_enabled()
+        live_mode = not settings.paper_trading
+        # Live execution is not implemented yet. Refuse to trade rather than run the
+        # paper simulator (which would fabricate fills and PnL) while claiming to be live.
+        live_blocked = live_mode and not LIVE_EXECUTION_IMPLEMENTED
         trade_mode = "paper_trading" if settings.paper_trading else "live_trading"
-        state.bot_status = trade_mode if trading_enabled else "trading_paused"
-        state.trading_enabled = trading_enabled
 
-        if trading_enabled:
+        if live_blocked:
+            await execution.cancel_all_open_orders()
+            state.bot_status = "live_unavailable"
+            state.trading_enabled = False
+            state.strategy_status = {market.condition_id: "live_unavailable" for market in selected}
+            logger.error(
+                "live_execution_not_implemented",
+                detail="Live trading requested but LiveExecutionEngine is not implemented; no orders placed.",
+            )
+        elif trading_enabled:
+            state.bot_status = trade_mode
+            state.trading_enabled = True
             for market in selected:
                 book = books.get(market.condition_id)
                 if not book:
@@ -156,13 +190,21 @@ async def run_once() -> None:
                         market.condition_id, Side.SELL, signal.ask_price, signal.size, market.yes_token_id
                     )
                     logger.info("strategy_signal", **signal.model_dump())
-                await execution.simulate_fills(book)
+                # Fills are only ever simulated in paper mode.
+                if settings.paper_trading:
+                    await execution.simulate_fills(book)
             await execution.cancel_stale_orders()
             state.strategy_status = {market.condition_id: "running" for market in selected}
         else:
+            state.bot_status = "trading_paused"
+            state.trading_enabled = False
             await execution.cancel_all_open_orders()
             state.strategy_status = {market.condition_id: "paused" for market in selected}
             logger.info("trading_paused")
+
+        # Persist trading state so exposure and realized PnL survive a restart.
+        if settings.paper_trading:
+            save_positions(inventory)
         state.orders = [
             order
             for order in execution.orders.values()
@@ -227,7 +269,10 @@ async def main() -> None:
     except Exception as exc:
         logger.warning("bot_migration_failed", error=str(exc))
     while True:
-        await run_once()
+        try:
+            await run_once()
+        except Exception as exc:
+            logger.error("run_once_failed", error=str(exc))
         await asyncio.sleep(10)
 
 

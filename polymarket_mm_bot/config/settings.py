@@ -15,6 +15,9 @@ class Settings(BaseSettings):
     environment: str = "local"
     log_level: str = "INFO"
 
+    dashboard_username: str = "admin"
+    dashboard_password: str | None = None
+
     paper_trading: bool = True
     live_trading_confirmed: bool = False
     starting_capital: float = 10_000.0

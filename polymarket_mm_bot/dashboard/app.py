@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import base64
+import binascii
+import secrets
 from contextlib import asynccontextmanager
 from typing import Any
 
 import structlog
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import HTMLResponse
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 
 from polymarket_mm_bot.config.runtime_settings import (
     EditableBotSettings,
@@ -28,6 +31,31 @@ from polymarket_mm_bot.dashboard.startup import ensure_schema
 from polymarket_mm_bot.utils import market_dict_matches_categories
 
 logger = structlog.get_logger()
+
+
+_PUBLIC_PATHS = frozenset({"/health"})
+_UNAUTHORIZED = Response(
+    content='{"detail":"Unauthorized"}',
+    status_code=401,
+    media_type="application/json",
+    headers={"WWW-Authenticate": 'Basic realm="polymarket-mm-bot"'},
+)
+
+
+def _basic_auth_ok(header: str | None, username: str, password: str) -> bool:
+    if not header or not header.startswith("Basic "):
+        return False
+    try:
+        decoded = base64.b64decode(header[len("Basic ") :]).decode("utf-8")
+    except (binascii.Error, ValueError, UnicodeDecodeError):
+        return False
+    user, sep, pw = decoded.partition(":")
+    if not sep:
+        return False
+    # Evaluate both comparisons to avoid short-circuit timing leaks.
+    user_ok = secrets.compare_digest(user, username)
+    pw_ok = secrets.compare_digest(pw, password)
+    return user_ok and pw_ok
 
 
 def _status() -> dict[str, Any]:
@@ -56,6 +84,25 @@ async def lifespan(_: FastAPI):
 def create_app() -> FastAPI:
     settings = get_settings()
     app = FastAPI(title=settings.app_name, lifespan=lifespan)
+
+    dashboard_username = settings.dashboard_username
+    dashboard_password = settings.dashboard_password
+
+    @app.middleware("http")
+    async def _require_auth(request: Request, call_next):
+        if request.url.path in _PUBLIC_PATHS:
+            return await call_next(request)
+        if not dashboard_password:
+            # Fail closed: refuse to serve anything until a password is configured,
+            # so a misconfigured deployment can never expose trading controls.
+            logger.error("dashboard_auth_not_configured", path=request.url.path)
+            return JSONResponse(
+                {"detail": "Dashboard authentication is not configured. Set DASHBOARD_PASSWORD."},
+                status_code=503,
+            )
+        if not _basic_auth_ok(request.headers.get("Authorization"), dashboard_username, dashboard_password):
+            return _UNAUTHORIZED
+        return await call_next(request)
 
     @app.get("/", response_class=HTMLResponse)
     async def root() -> str:

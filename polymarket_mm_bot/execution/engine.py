@@ -13,6 +13,11 @@ from polymarket_mm_bot.risk import RiskEngine
 
 logger = structlog.get_logger()
 
+# Flip to True only once LiveExecutionEngine implements real order placement and
+# cancellation against Polymarket and has been manually reviewed. While this is
+# False the bot refuses to run in live mode instead of faking fills.
+LIVE_EXECUTION_IMPLEMENTED = False
+
 
 class ExecutionEngine(Protocol):
     orders: dict[str, BotOrder]
