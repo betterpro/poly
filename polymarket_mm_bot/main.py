@@ -310,6 +310,12 @@ async def run_once() -> None:
                     await execution.cancel_all_for_market(market.condition_id)
                     _record_risk_event(runtime, market.condition_id, decision.code, decision.message)
                     continue
+                # Match resting quotes from the previous cycle against fresh
+                # market prints BEFORE canceling/replacing them. Otherwise
+                # passive orders are torn down every cycle without ever having
+                # a chance to fill on the trades that happened in between.
+                if settings.paper_trading:
+                    await execution.simulate_fills(book, trades.get(market.condition_id, []))
                 signal = strategy.build_signal(market.condition_id, book, trades.get(market.condition_id, []))
                 if signal and signal.reason == REASON_TOXIC_PULL:
                     # Informed flow detected: get out of the way immediately

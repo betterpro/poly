@@ -141,6 +141,7 @@ class PaperExecutionEngine:
             return
         order.status = OrderStatus.CANCELED
         order.updated_at = datetime.now(UTC)
+        self._maker_cursor.pop(client_order_id, None)
         self._persist_order(order)
         logger.info("order_canceled", client_order_id=client_order_id, market_id=order.market_id)
 
@@ -213,10 +214,18 @@ class PaperExecutionEngine:
             if timestamp <= cutoff:
                 continue
             latest = max(latest, timestamp)
+            # Prints on the other outcome token are quoted in that token's
+            # price space (NO = 1 - YES) and must not fill a YES order.
+            if trade.token_id and order.token_id and trade.token_id != order.token_id:
+                continue
             if order.side == Side.BUY and trade.price <= order.price:
-                volume += trade.size
+                # Only seller-initiated prints can hit our resting bid.
+                if trade.side is None or trade.side == Side.SELL:
+                    volume += trade.size
             elif order.side == Side.SELL and trade.price >= order.price:
-                volume += trade.size
+                # Only buyer-initiated prints can lift our resting ask.
+                if trade.side is None or trade.side == Side.BUY:
+                    volume += trade.size
         self._maker_cursor[order.client_order_id] = latest
         return volume
 

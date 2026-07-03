@@ -75,16 +75,21 @@ class PolymarketDataClient:
         return self._normalize_book(response.json(), market_id or token_id, token_id)
 
     async def fetch_recent_trades(self, market_id: str, limit: int = 100) -> list[Trade]:
+        # Use the public Data-API: the CLOB /trades endpoint requires L2 auth
+        # and would silently starve the paper fill simulator of market prints.
         response = await self.http.get(
-            f"{self.settings.polymarket_host}/trades",
+            f"{self.settings.polymarket_data_host}/trades",
             params={"market": market_id, "limit": limit},
         )
         if response.status_code in {401, 403, 404}:
+            logger.warning("recent_trades_unavailable", market_id=market_id, status=response.status_code)
             return []
         response.raise_for_status()
         payload = response.json()
         rows = payload if isinstance(payload, list) else payload.get("data", [])
-        return [self._normalize_trade(row, market_id) for row in rows]
+        trades = [self._normalize_trade(row, market_id) for row in rows]
+        trades.sort(key=lambda trade: trade.timestamp)  # oldest first for consumers
+        return trades
 
     async def subscribe_order_books(self, token_ids: list[str]) -> AsyncIterator[dict[str, Any]]:
         while True:
@@ -153,8 +158,8 @@ class PolymarketDataClient:
         side = row.get("side")
         timestamp = self._parse_trade_timestamp(row)
         trade = Trade(
-            market_id=str(row.get("market") or row.get("market_id") or market_id),
-            token_id=row.get("asset_id") or row.get("token_id"),
+            market_id=str(row.get("market") or row.get("market_id") or row.get("conditionId") or market_id),
+            token_id=row.get("asset_id") or row.get("token_id") or row.get("asset"),
             price=float(row.get("price", 0)),
             size=float(row.get("size", 0)),
             side=Side(side.lower()) if side else None,

@@ -6,11 +6,19 @@ from polymarket_mm_bot.models import BookLevel, BotOrder, OrderBook, Outcome, Si
 from polymarket_mm_bot.risk import RiskEngine
 
 
-def _print(price: float, size: float, seconds_from_now: float = 1.0) -> Trade:
+def _print(
+    price: float,
+    size: float,
+    seconds_from_now: float = 1.0,
+    side: Side | None = None,
+    token_id: str | None = None,
+) -> Trade:
     return Trade(
         market_id="m1",
+        token_id=token_id,
         price=price,
         size=size,
+        side=side,
         timestamp=datetime.now(UTC) + timedelta(seconds=seconds_from_now),
     )
 
@@ -76,6 +84,29 @@ async def test_passive_fill_does_not_double_count_prints(settings, book):
     fills = await execution.simulate_fills(book, prints)
     assert fills == []
     assert inventory.get_position("m1").yes_size == 6
+
+
+async def test_passive_buy_ignores_buyer_initiated_prints(settings, book):
+    """A buyer-initiated print below our bid means someone lifted an ask —
+    it cannot have hit our resting bid, so it must not fill it."""
+    inventory = InventoryManager(settings)
+    execution = PaperExecutionEngine(settings, inventory, RiskEngine(settings, inventory))
+    await execution.create_order("m1", Side.BUY, 0.49, 10, "yes-token")
+    fills = await execution.simulate_fills(book, [_print(0.49, 6, side=Side.BUY)])
+    assert fills == []
+    fills = await execution.simulate_fills(book, [_print(0.49, 6, seconds_from_now=2.0, side=Side.SELL)])
+    assert len(fills) == 1
+    assert inventory.get_position("m1").yes_size == 6
+
+
+async def test_passive_fill_ignores_prints_on_other_token(settings, book):
+    inventory = InventoryManager(settings)
+    execution = PaperExecutionEngine(settings, inventory, RiskEngine(settings, inventory))
+    await execution.create_order("m1", Side.BUY, 0.49, 10, "yes-token")
+    fills = await execution.simulate_fills(book, [_print(0.40, 6, token_id="no-token")])
+    assert fills == []
+    fills = await execution.simulate_fills(book, [_print(0.49, 6, seconds_from_now=2.0, token_id="yes-token")])
+    assert len(fills) == 1
 
 
 async def test_passive_buy_ignores_prints_above_bid(settings, book):

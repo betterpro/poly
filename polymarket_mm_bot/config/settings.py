@@ -27,6 +27,8 @@ class Settings(BaseSettings):
 
     polymarket_host: str = "https://clob.polymarket.com"
     polymarket_gamma_host: str = "https://gamma-api.polymarket.com"
+    # Public trade prints (no auth). The CLOB /trades endpoint requires L2 auth.
+    polymarket_data_host: str = "https://data-api.polymarket.com"
     polymarket_ws_url: str = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
     polymarket_api_key: str | None = None
     polymarket_api_secret: str | None = None
