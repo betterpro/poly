@@ -17,7 +17,7 @@ from polymarket_mm_bot.data import PolymarketDataClient
 from polymarket_mm_bot.logging import configure_logging
 from polymarket_mm_bot.models import BotOrder, Market, OrderBook, OrderStatus, Position, Side
 from polymarket_mm_bot.market_scanner import MarketScanner
-from polymarket_mm_bot.strategy import MarketMakingStrategy
+from polymarket_mm_bot.strategy import REASON_TOXIC_PULL, MarketMakingStrategy
 from polymarket_mm_bot.trading_runtime import get_trading_runtime
 from polymarket_mm_bot.utils import estimate_taker_fee, maker_fee
 
@@ -255,6 +255,7 @@ async def run_once() -> None:
             state.bot_status = "risk_paused"
 
         if trading_enabled:
+            strategy_status: dict[str, str] = {market.condition_id: "running" for market in selected}
             for market in selected:
                 book = books.get(market.condition_id)
                 if not book:
@@ -265,7 +266,13 @@ async def run_once() -> None:
                     _record_risk_event(runtime, market.condition_id, decision.code, decision.message)
                     continue
                 signal = strategy.build_signal(market.condition_id, book, trades.get(market.condition_id, []))
-                if signal and signal.bid_price and signal.ask_price:
+                if signal and signal.reason == REASON_TOXIC_PULL:
+                    # Informed flow detected: get out of the way immediately
+                    # instead of waiting for stale-order cleanup.
+                    await execution.cancel_all_for_market(market.condition_id)
+                    strategy_status[market.condition_id] = "toxic_flow_paused"
+                    logger.info("toxic_flow_quotes_pulled", market_id=market.condition_id)
+                elif signal and signal.bid_price and signal.ask_price:
                     await execution.cancel_all_for_market(market.condition_id)
                     if inventory.can_quote_side(market.condition_id, Side.BUY):
                         await execution.create_order(
@@ -293,7 +300,7 @@ async def run_once() -> None:
             # In live mode, learn fills by reconciling against the exchange.
             if not settings.paper_trading:
                 await execution.sync_fills()
-            state.strategy_status = {market.condition_id: "running" for market in selected}
+            state.strategy_status = strategy_status
         else:
             await execution.cancel_all_open_orders()
             state.strategy_status = {market.condition_id: "paused" for market in selected}

@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import AsyncIterator
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 import httpx
@@ -151,10 +151,28 @@ class PolymarketDataClient:
 
     def _normalize_trade(self, row: dict[str, Any], market_id: str) -> Trade:
         side = row.get("side")
-        return Trade(
+        timestamp = self._parse_trade_timestamp(row)
+        trade = Trade(
             market_id=str(row.get("market") or row.get("market_id") or market_id),
             token_id=row.get("asset_id") or row.get("token_id"),
             price=float(row.get("price", 0)),
             size=float(row.get("size", 0)),
             side=Side(side.lower()) if side else None,
         )
+        if timestamp is not None:
+            trade.timestamp = timestamp
+        return trade
+
+    @staticmethod
+    def _parse_trade_timestamp(row: dict[str, Any]) -> datetime | None:
+        raw = row.get("match_time") or row.get("timestamp") or row.get("last_update")
+        if raw is None:
+            return None
+        try:
+            return datetime.fromtimestamp(float(raw), tz=UTC)
+        except (TypeError, ValueError, OSError):
+            pass
+        try:
+            return datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+        except ValueError:
+            return None

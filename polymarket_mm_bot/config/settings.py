@@ -60,6 +60,17 @@ class Settings(BaseSettings):
     stale_order_seconds: int = 30
     stale_data_seconds: int = 15
 
+    # Adverse-selection (toxic flow) protection. When recent taker flow is
+    # heavily one-sided or price is trending fast, informed traders are likely
+    # active: widen quotes first, then pull them entirely.
+    toxicity_window_seconds: int = 90
+    toxicity_min_trades: int = 3
+    toxicity_widen_threshold: float = 0.60
+    toxicity_pull_threshold: float = 0.85
+    toxicity_momentum_pull_ticks: float = 3.0
+    toxicity_spread_multiplier: float = 2.0
+    toxicity_size_multiplier: float = 0.5
+
     allowed_categories: list[str] = Field(default_factory=lambda: list(DEFAULT_ALLOWED_CATEGORIES))
 
     run_mode: Literal["paper", "live"] = "paper"
