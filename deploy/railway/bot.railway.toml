@@ -1,0 +1,12 @@
+# Point each Railway service at this file (Settings → Config-as-code path):
+# /deploy/railway/bot.railway.toml
+
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile"
+watchPatterns = ["polymarket_mm_bot/**", "Dockerfile", "pyproject.toml", "alembic/**"]
+
+[deploy]
+preDeployCommand = ["alembic upgrade head"]
+startCommand = "python -m polymarket_mm_bot.main"
+restartPolicyType = "ON_FAILURE"

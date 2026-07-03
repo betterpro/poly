@@ -122,8 +122,10 @@ def _normalized_pnl(snapshot: dict[str, Any]) -> dict[str, float]:
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    logger.info("dashboard_startup_begin")
     ensure_schema()
     start_snapshot_poller()
+    logger.info("dashboard_startup_complete")
     yield
     stop_snapshot_poller()
 
@@ -183,8 +185,8 @@ def create_app() -> FastAPI:
             "message": None
             if ok
             else (
-                "Database unreachable. In DigitalOcean, set DATABASE_URL to the Supabase "
-                "Session pooler URI and allow external connections in Supabase network settings."
+                "Database unreachable. Set DATABASE_URL to the Railway Postgres private URL "
+                "(${{Postgres.DATABASE_PRIVATE_URL}}) in project variables."
             ),
         }
 
@@ -204,8 +206,8 @@ def create_app() -> FastAPI:
             raise HTTPException(
                 status_code=503,
                 detail=(
-                    "Database unreachable. Use Supabase Session pooler DATABASE_URL in "
-                    "DigitalOcean and disable network restrictions."
+                    "Database unreachable. Set DATABASE_URL to the Railway Postgres private URL "
+                    "(${{Postgres.DATABASE_PRIVATE_URL}}) in project variables."
                 ),
             )
         try:
@@ -216,7 +218,7 @@ def create_app() -> FastAPI:
             logger.warning("settings_save_failed", error=str(exc))
             raise HTTPException(
                 status_code=503,
-                detail="Could not save settings. Check DATABASE_URL and Supabase access.",
+                detail="Could not save settings. Check DATABASE_URL and Railway Postgres access.",
             ) from exc
 
     @app.get("/markets")

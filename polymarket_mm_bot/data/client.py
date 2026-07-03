@@ -79,7 +79,7 @@ class PolymarketDataClient:
             f"{self.settings.polymarket_host}/trades",
             params={"market": market_id, "limit": limit},
         )
-        if response.status_code == 404:
+        if response.status_code in {401, 403, 404}:
             return []
         response.raise_for_status()
         payload = response.json()

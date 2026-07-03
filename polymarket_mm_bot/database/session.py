@@ -13,6 +13,7 @@ def get_engine(settings: Settings | None = None):
         kwargs["poolclass"] = NullPool
         kwargs["connect_args"] = {
             "connect_timeout": 5,
+            "target_session_attrs": "read-write",
             "options": "-c statement_timeout=5000",
         }
     return create_engine(url, **kwargs)

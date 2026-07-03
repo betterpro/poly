@@ -101,6 +101,14 @@ def test_api_error_breaker_trips(settings):
     assert decision.code == "api_error_threshold"
 
 
+def test_api_errors_reset(settings):
+    risk = RiskEngine(settings, InventoryManager(settings))
+    for _ in range(settings.max_api_errors):
+        risk.record_api_error()
+    risk.reset_api_errors()
+    assert risk.record_api_error().allowed is True
+
+
 def test_risk_still_blocks_large_order(settings):
     risk = RiskEngine(settings, InventoryManager(settings))
     order = BotOrder(client_order_id="1", market_id="m1", side=Side.BUY, price=0.5, size=999)

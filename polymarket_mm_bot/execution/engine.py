@@ -43,6 +43,30 @@ def record_fill(store: list[dict], order: BotOrder, size: float, price: float) -
         del store[: len(store) - _MAX_RECENT_FILLS]
 
 
+def _safe_persist_order(session_factory: sessionmaker[Session] | None, order: BotOrder) -> None:
+    if session_factory is None:
+        return
+    try:
+        with session_factory() as session:
+            save_order(session, order)
+    except Exception as exc:
+        logger.warning("order_persist_failed", client_order_id=order.client_order_id, error=str(exc))
+
+
+def _safe_persist_position(
+    session_factory: sessionmaker[Session] | None,
+    inventory: InventoryManager,
+    market_id: str,
+) -> None:
+    if session_factory is None:
+        return
+    try:
+        with session_factory() as session:
+            save_position(session, inventory.get_position(market_id))
+    except Exception as exc:
+        logger.warning("position_persist_failed", market_id=market_id, error=str(exc))
+
+
 class ExecutionEngine(Protocol):
     orders: dict[str, BotOrder]
 
@@ -74,16 +98,10 @@ class PaperExecutionEngine:
         self.recent_fills: list[dict] = []
 
     def _persist_order(self, order: BotOrder) -> None:
-        if self.session_factory is None:
-            return
-        with self.session_factory() as session:
-            save_order(session, order)
+        _safe_persist_order(self.session_factory, order)
 
     def _persist_position(self, market_id: str) -> None:
-        if self.session_factory is None:
-            return
-        with self.session_factory() as session:
-            save_position(session, self.inventory.get_position(market_id))
+        _safe_persist_position(self.session_factory, self.inventory, market_id)
 
     async def create_order(
         self,
@@ -250,16 +268,10 @@ class LiveExecutionEngine:
         logger.info("live_preflight_ok", balance=balance, allowance=allowance)
 
     def _persist_order(self, order: BotOrder) -> None:
-        if self.session_factory is None:
-            return
-        with self.session_factory() as session:
-            save_order(session, order)
+        _safe_persist_order(self.session_factory, order)
 
     def _persist_position(self, market_id: str) -> None:
-        if self.session_factory is None:
-            return
-        with self.session_factory() as session:
-            save_position(session, self.inventory.get_position(market_id))
+        _safe_persist_position(self.session_factory, self.inventory, market_id)
 
     async def create_order(
         self,

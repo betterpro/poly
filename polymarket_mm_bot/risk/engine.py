@@ -70,6 +70,9 @@ class RiskEngine:
             return self._deny("api_error_threshold", None)
         return RiskDecision(True)
 
+    def reset_api_errors(self) -> None:
+        self.api_errors = 0
+
     def update_daily_pnl(self, pnl: float) -> RiskDecision:
         self.daily_pnl = pnl
         if pnl <= -abs(self.settings.max_daily_loss):

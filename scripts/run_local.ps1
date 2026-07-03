@@ -30,6 +30,7 @@ if (Get-Command docker -ErrorAction SilentlyContinue) {
 
 Write-Host "Running database migrations..."
 python -m alembic upgrade head
+$env:SKIP_STARTUP_MIGRATIONS = "1"
 
 Write-Host "Stopping any existing dashboard on port $Port..."
 Stop-PortListener -Port $Port
@@ -41,6 +42,7 @@ $dashboardArgs = @(
 )
 $botCommand = @"
 Set-Location '$Root'
+`$env:SKIP_STARTUP_MIGRATIONS = '1'
 `$env:PAPER_TRADING = 'true'
 `$env:LIVE_TRADING_CONFIRMED = 'false'
 python -m polymarket_mm_bot.main
@@ -87,7 +89,7 @@ else {
     Start-Process powershell -ArgumentList @(
         "-NoExit",
         "-Command",
-        "Set-Location '$Root'; Write-Host 'Dashboard -> http://localhost:$Port'; python -m uvicorn polymarket_mm_bot.dashboard.app:app --host 0.0.0.0 --port $Port"
+        "Set-Location '$Root'; `$env:SKIP_STARTUP_MIGRATIONS = '1'; Write-Host 'Dashboard -> http://localhost:$Port'; python -m uvicorn polymarket_mm_bot.dashboard.app:app --host 0.0.0.0 --port $Port"
     )
 
     Start-Sleep -Seconds 1

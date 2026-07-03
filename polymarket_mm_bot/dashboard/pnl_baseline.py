@@ -3,10 +3,14 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 
+import structlog
+
 from sqlalchemy.orm import Session
 
 from polymarket_mm_bot.database.orm import BotConfigRow
 from polymarket_mm_bot.database.session import get_session_factory
+
+logger = structlog.get_logger()
 
 TRACKING_KEY = "daily_pnl_tracking"
 
@@ -44,7 +48,11 @@ def save_daily_pnl_tracking(tracking: dict[str, Any], session: Session | None = 
     config = dict(row.config_json or {})
     config[TRACKING_KEY] = tracking
     row.config_json = config
-    session.commit()
+    try:
+        session.commit()
+    except Exception as exc:
+        session.rollback()
+        logger.warning("daily_pnl_tracking_save_failed", error=str(exc))
     return tracking
 
 

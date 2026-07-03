@@ -142,7 +142,6 @@ async def _load_books_and_trades(
             trades[market.condition_id] = await data.fetch_recent_trades(market.condition_id)
         except Exception as exc:
             logger.debug("trades_unavailable", market_id=market.condition_id, error=str(exc))
-            error_count += 1
             trades[market.condition_id] = []
 
     await asyncio.gather(*(load_market_data(market) for market in candidates))
@@ -226,9 +225,12 @@ async def run_once() -> None:
             decision = risk.record_api_error()
             if not decision.allowed:
                 await execution.cancel_all_open_orders()
-                _record_risk_event(runtime, None, decision.code)
+                if risk.api_errors == settings.max_api_errors:
+                    _record_risk_event(runtime, None, decision.code)
                 api_blocked = True
                 break
+        if market_data_errors == 0:
+            risk.reset_api_errors()
 
         selected = scanner.select_markets(markets, books, trades)
         state.selected_markets = selected
@@ -352,11 +354,18 @@ async def run_once() -> None:
         await data.close()
 
 
+def _skip_startup_migrations() -> bool:
+    import os
+
+    return os.environ.get("SKIP_STARTUP_MIGRATIONS", "").lower() in {"1", "true", "yes"}
+
+
 async def main() -> None:
-    try:
-        run_migrations()
-    except Exception as exc:
-        logger.warning("bot_migration_failed", error=str(exc))
+    if not _skip_startup_migrations():
+        try:
+            run_migrations()
+        except Exception as exc:
+            logger.warning("bot_migration_failed", error=str(exc))
     while True:
         try:
             await run_once()

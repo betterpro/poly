@@ -206,6 +206,23 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
     let categoryOptions = [];
 
+    function apiFetch(url, options = {}) {
+      const path = url.startsWith("/") ? url : `/${url}`;
+      // Avoid fetch() failing when the page was opened via user:pass@host URLs.
+      const target = `${window.location.origin}${path}`;
+      return fetch(target, { credentials: "same-origin", ...options });
+    }
+
+    async function readListJson(res) {
+      const body = await readJsonResponse(res);
+      return res.ok && Array.isArray(body) ? body : [];
+    }
+
+    async function readObjectJson(res, fallback = {}) {
+      const body = await readJsonResponse(res);
+      return res.ok && body && typeof body === "object" && !Array.isArray(body) ? body : fallback;
+    }
+
     function showPanel(name) {
       document.querySelectorAll(".panel").forEach(p => p.classList.remove("active"));
       document.querySelectorAll("nav button").forEach(b => b.classList.remove("active"));
@@ -247,7 +264,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       msg.className = "message";
       msg.textContent = "";
       try {
-        const res = await fetch("/trading/mode");
+        const res = await apiFetch("/trading/mode");
         const body = await readJsonResponse(res);
         if (!res.ok) {
           msg.className = "message error";
@@ -274,7 +291,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       }
       msg.className = "message";
       msg.textContent = "Verifying...";
-      const res = await fetch("/trading/mode/live", {
+      const res = await apiFetch("/trading/mode/live", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ code }),
@@ -295,7 +312,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       const msg = document.getElementById("mode-message");
       msg.className = "message";
       msg.textContent = "Switching...";
-      const res = await fetch("/trading/mode/paper", { method: "POST" });
+      const res = await apiFetch("/trading/mode/paper", { method: "POST" });
       const body = await readJsonResponse(res);
       if (!res.ok) {
         msg.className = "message error";
@@ -396,8 +413,8 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       const trimmed = text.trimStart();
       if (trimmed.startsWith("<!DOCTYPE") || trimmed.startsWith("<html")) {
         return {
-          detail: "App Platform timeout (" + res.status + "). Database likely unreachable from DigitalOcean. "
-            + "Set DATABASE_URL to Supabase Session pooler URI."
+          detail: "Gateway timeout (" + res.status + "). Database likely unreachable. "
+            + "Set DATABASE_URL to ${{Postgres.DATABASE_PRIVATE_URL}} in Railway."
         };
       }
       try {
@@ -408,7 +425,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     }
 
     async function loadSettingsStatus() {
-      const res = await fetch("/settings/status");
+      const res = await apiFetch("/settings/status");
       const status = await readJsonResponse(res);
       const warn = document.getElementById("db-warning");
       const saveBtn = document.getElementById("save-settings");
@@ -429,8 +446,8 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       msg.textContent = "";
       await loadSettingsStatus();
       const [settingsRes, categoriesRes] = await Promise.all([
-        fetch("/settings"),
-        fetch("/settings/categories"),
+        apiFetch("/settings"),
+        apiFetch("/settings/categories"),
       ]);
       const data = await readJsonResponse(settingsRes);
       const categoriesBody = await readJsonResponse(categoriesRes);
@@ -469,7 +486,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       const msg = document.getElementById("settings-message");
       msg.className = "message";
       msg.textContent = "Saving...";
-      const res = await fetch("/settings", {
+      const res = await apiFetch("/settings", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
@@ -558,7 +575,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       button.disabled = true;
       if (note) note.textContent = "Resetting…";
       try {
-        const res = await fetch("/pnl/reset-daily", { method: "POST" });
+        const res = await apiFetch("/pnl/reset-daily", { method: "POST" });
         const body = await res.json().catch(() => ({}));
         if (!res.ok) throw new Error(body.detail || "Reset failed");
         if (note) note.textContent = "Reset — waiting for bot sync…";
@@ -601,7 +618,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       if (note) note.textContent = enabled ? "Resuming…" : "Stopping…";
       try {
         const path = enabled ? "/trading/resume" : "/trading/stop";
-        const res = await fetch(path, { method: "POST" });
+        const res = await apiFetch(path, { method: "POST" });
         const body = await res.json().catch(() => ({}));
         if (!res.ok) throw new Error(body.detail || "Request failed");
         if (note) note.textContent = enabled ? "Resumed — waiting for bot sync…" : "Stopped — canceling open orders…";
@@ -824,45 +841,52 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     }
 
     async function refreshOverview() {
-      const [health, markets, positions, orders, pnl, risk, fills] = await Promise.all([
-        fetch("/health").then(r => r.json()),
-        fetch("/selected-markets").then(r => r.json()),
-        fetch("/positions").then(r => r.json()),
-        fetch("/orders").then(r => r.json()),
-        fetch("/pnl").then(r => r.json()),
-        fetch("/risk-events").then(r => r.json()),
-        fetch("/fills").then(r => r.json()),
-      ]);
-      document.getElementById("mode").innerText = health.mode_warning || health.status;
-      const categories = (health.allowed_categories || []).join(", ");
-      const hint = document.querySelector("#overview .hint");
-      const isPaper = String(health.mode_warning || "").toLowerCase().includes("paper");
-      if (hint) {
-        let text = isPaper
-          ? "Paper trading — simulated quotes and fills only. No real Polymarket orders."
-          : "Live bot metrics are synced from the worker every loop.";
-        text += " PnL includes unrealized mark-to-market on open positions.";
-        if (categories) text += " Categories: " + categories + ".";
-        if (health.updated_at) {
-          const when = new Date(health.updated_at);
-          if (!Number.isNaN(when.getTime())) {
-            text += " Last bot sync: " + when.toLocaleTimeString() + ".";
+      try {
+        const healthRes = await apiFetch("/health");
+        const health = await readObjectJson(healthRes, {});
+        document.getElementById("mode").innerText = health.mode_warning || health.status || "Unknown";
+        const categories = (health.allowed_categories || []).join(", ");
+        const hint = document.querySelector("#overview .hint");
+        const isPaper = String(health.mode_warning || "").toLowerCase().includes("paper");
+        if (hint) {
+          let text = isPaper
+            ? "Paper trading — simulated quotes and fills only. No real Polymarket orders."
+            : "Live bot metrics are synced from the worker every loop.";
+          text += " PnL includes unrealized mark-to-market on open positions.";
+          if (categories) text += " Categories: " + categories + ".";
+          if (health.updated_at) {
+            const when = new Date(health.updated_at);
+            if (!Number.isNaN(when.getTime())) {
+              text += " Last bot sync: " + when.toLocaleTimeString() + ".";
+            }
           }
+          if (health.snapshot_age_seconds != null && health.snapshot_age_seconds > 45) {
+            text += " Dashboard cache is stale — check bot is running.";
+          }
+          hint.textContent = text;
         }
-        if (health.snapshot_age_seconds != null && health.snapshot_age_seconds > 45) {
-          text += " Dashboard cache is stale — check bot is running.";
-        }
-        hint.textContent = text;
+
+        const [markets, positions, orders, pnl, risk, fills] = await Promise.all([
+          apiFetch("/selected-markets").then(readListJson),
+          apiFetch("/positions").then(readListJson),
+          apiFetch("/orders").then(readListJson),
+          apiFetch("/pnl").then((res) => readObjectJson(res)),
+          apiFetch("/risk-events").then(readListJson),
+          apiFetch("/fills").then(readListJson),
+        ]);
+        const marketsById = marketLookup(markets);
+        renderStats(health, pnl, markets, orders, positions, risk, fills);
+        updateTradingControls(health);
+        updatePnlResetNote(pnl);
+        renderTrades(fills, marketsById);
+        renderMarkets(markets);
+        renderOrders(orders, marketsById);
+        renderPositions(positions, marketsById);
+        renderRiskEvents(risk);
+      } catch (err) {
+        console.error("refreshOverview failed", err);
+        document.getElementById("mode").innerText = "Load error";
       }
-      const marketsById = marketLookup(markets);
-      renderStats(health, pnl, markets, orders, positions, risk, fills);
-      updateTradingControls(health);
-      updatePnlResetNote(pnl);
-      renderTrades(fills, marketsById);
-      renderMarkets(markets);
-      renderOrders(orders, marketsById);
-      renderPositions(positions, marketsById);
-      renderRiskEvents(risk);
     }
 
     refreshOverview();
