@@ -19,7 +19,7 @@ from polymarket_mm_bot.models import BotOrder, Market, OrderBook, OrderStatus, P
 from polymarket_mm_bot.market_scanner import MarketScanner
 from polymarket_mm_bot.strategy import REASON_TOXIC_PULL, MarketMakingStrategy
 from polymarket_mm_bot.trading_runtime import get_trading_runtime
-from polymarket_mm_bot.utils import estimate_taker_fee, maker_fee
+from polymarket_mm_bot.utils import clamp, estimate_taker_fee, maker_fee, round_to_tick
 
 logger = structlog.get_logger()
 
@@ -95,6 +95,50 @@ def _market_card_payload(market: Market, orders: list, order_size: float) -> dic
         }
     )
     return payload
+
+
+async def _unwind_orphaned_positions(
+    settings,
+    inventory,
+    execution,
+    markets: list[Market],
+    selected: list[Market],
+    books: dict[str, OrderBook],
+    trades: dict[str, list],
+) -> None:
+    """Quote exits for inventory held in markets the scanner no longer selects.
+
+    Without this, a position acquired in a market that later drops out of the
+    selection set would never be quoted on the sell side and stay stuck forever.
+    """
+    selected_ids = {market.condition_id for market in selected}
+    market_lookup = {market.condition_id: market for market in markets}
+    for position in list(inventory.positions.values()):
+        if position.yes_size <= 0 or position.market_id in selected_ids:
+            continue
+        market = market_lookup.get(position.market_id)
+        book = books.get(position.market_id)
+        if market is None or not market.yes_token_id or book is None:
+            continue
+        if book.best_bid is None or book.best_ask is None:
+            continue
+        has_open_sell = any(
+            order.market_id == position.market_id
+            and order.side == Side.SELL
+            and order.status in {OrderStatus.OPEN, OrderStatus.PARTIALLY_FILLED}
+            for order in execution.orders.values()
+        )
+        if has_open_sell:
+            continue
+        ask = round_to_tick(
+            clamp(max(book.best_ask - settings.min_tick, book.best_bid), 0.01, 0.99),
+            settings.min_tick,
+        )
+        size = min(position.yes_size, settings.max_order_size)
+        await execution.create_order(position.market_id, Side.SELL, ask, size, market.yes_token_id)
+        logger.info("unwind_quote_placed", market_id=position.market_id, price=ask, size=size)
+        if settings.paper_trading:
+            await execution.simulate_fills(book, trades.get(position.market_id, []))
 
 
 def _record_risk_event(runtime, market_id: str | None, code: str, message: str | None = None) -> None:
@@ -295,7 +339,8 @@ async def run_once() -> None:
                     logger.info("strategy_signal", **signal.model_dump())
                 # Fills are only ever simulated in paper mode.
                 if settings.paper_trading:
-                    await execution.simulate_fills(book)
+                    await execution.simulate_fills(book, trades.get(market.condition_id, []))
+            await _unwind_orphaned_positions(settings, inventory, execution, markets, selected, books, trades)
             await execution.cancel_stale_orders()
             # In live mode, learn fills by reconciling against the exchange.
             if not settings.paper_trading:

@@ -1,7 +1,18 @@
+from datetime import UTC, datetime, timedelta
+
 from polymarket_mm_bot.execution import PaperExecutionEngine
 from polymarket_mm_bot.inventory import InventoryManager
-from polymarket_mm_bot.models import BookLevel, BotOrder, OrderBook, Outcome, Side
+from polymarket_mm_bot.models import BookLevel, BotOrder, OrderBook, Outcome, Side, Trade
 from polymarket_mm_bot.risk import RiskEngine
+
+
+def _print(price: float, size: float, seconds_from_now: float = 1.0) -> Trade:
+    return Trade(
+        market_id="m1",
+        price=price,
+        size=size,
+        timestamp=datetime.now(UTC) + timedelta(seconds=seconds_from_now),
+    )
 
 
 async def test_paper_fill_updates_order_and_position(settings, book):
@@ -42,6 +53,51 @@ async def test_passive_buy_at_bid_does_not_fill(settings):
     fills = await execution.simulate_fills(book)
     assert fills == []
     assert inventory.get_position("m1").yes_size == 0
+
+
+async def test_passive_buy_fills_when_market_prints_at_bid(settings, book):
+    inventory = InventoryManager(settings)
+    execution = PaperExecutionEngine(settings, inventory, RiskEngine(settings, inventory))
+    # Resting bid at 0.49 (best bid), below the 0.52 ask: not a crossing order.
+    await execution.create_order("m1", Side.BUY, 0.49, 10, "yes-token")
+    fills = await execution.simulate_fills(book, [_print(0.49, 6)])
+    assert len(fills) == 1
+    assert fills[0].filled_size == 6
+    assert inventory.get_position("m1").yes_size == 6
+
+
+async def test_passive_fill_does_not_double_count_prints(settings, book):
+    inventory = InventoryManager(settings)
+    execution = PaperExecutionEngine(settings, inventory, RiskEngine(settings, inventory))
+    await execution.create_order("m1", Side.BUY, 0.49, 10, "yes-token")
+    prints = [_print(0.49, 6)]
+    await execution.simulate_fills(book, prints)
+    # Same trade feed seen again next cycle must not fill more.
+    fills = await execution.simulate_fills(book, prints)
+    assert fills == []
+    assert inventory.get_position("m1").yes_size == 6
+
+
+async def test_passive_buy_ignores_prints_above_bid(settings, book):
+    inventory = InventoryManager(settings)
+    execution = PaperExecutionEngine(settings, inventory, RiskEngine(settings, inventory))
+    await execution.create_order("m1", Side.BUY, 0.49, 10, "yes-token")
+    fills = await execution.simulate_fills(book, [_print(0.52, 6)])
+    assert fills == []
+    assert inventory.get_position("m1").yes_size == 0
+
+
+async def test_passive_sell_fills_when_market_prints_at_ask(settings, book):
+    inventory = InventoryManager(settings)
+    execution = PaperExecutionEngine(settings, inventory, RiskEngine(settings, inventory))
+    inventory.get_position("m1").yes_size = 10
+    inventory.get_position("m1").avg_yes_price = 0.45
+    # Resting ask at 0.52 (best ask), above the 0.49 bid: not a crossing order.
+    await execution.create_order("m1", Side.SELL, 0.52, 10, "yes-token")
+    fills = await execution.simulate_fills(book, [_print(0.53, 10)])
+    assert len(fills) == 1
+    assert inventory.get_position("m1").yes_size == 0
+    assert inventory.get_position("m1").realized_pnl > 0
 
 
 def test_allowed_fill_size_caps_buy(settings):

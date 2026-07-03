@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Protocol
 
 import structlog
@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from polymarket_mm_bot.config import Settings
 from polymarket_mm_bot.database.runtime_state import save_order, save_position
 from polymarket_mm_bot.inventory import InventoryManager
-from polymarket_mm_bot.models import BotOrder, OrderBook, OrderStatus, Outcome, Side
+from polymarket_mm_bot.models import BotOrder, OrderBook, OrderStatus, Outcome, Side, Trade
 from polymarket_mm_bot.risk import RiskEngine
 
 logger = structlog.get_logger()
@@ -96,6 +96,9 @@ class PaperExecutionEngine:
         self.orders: dict[str, BotOrder] = orders or {}
         self.session_factory = session_factory
         self.recent_fills: list[dict] = []
+        # Per-order timestamp watermark so the same market prints are never
+        # counted twice when simulating passive maker fills across cycles.
+        self._maker_cursor: dict[str, datetime] = {}
 
     def _persist_order(self, order: BotOrder) -> None:
         _safe_persist_order(self.session_factory, order)
@@ -157,14 +160,21 @@ class PaperExecutionEngine:
             if order.status == OrderStatus.OPEN and (now - order.created_at).total_seconds() > self.settings.stale_order_seconds:
                 await self.cancel_order(order.client_order_id)
 
-    async def simulate_fills(self, order_book: OrderBook) -> list[BotOrder]:
+    async def simulate_fills(self, order_book: OrderBook, trades: list[Trade] | None = None) -> list[BotOrder]:
         filled: list[BotOrder] = []
         for order in self.orders.values():
             if order.market_id != order_book.market_id or order.status not in {OrderStatus.OPEN, OrderStatus.PARTIALLY_FILLED}:
                 continue
+            volume_cap: float | None = None
             if not self._order_crosses_book(order, order_book):
-                continue
+                # Passive (maker) fill: the quote rests in the book, so it only
+                # fills when real market prints trade at or through its price.
+                volume_cap = self._maker_fill_volume(order, trades)
+                if volume_cap <= 0:
+                    continue
             fill_size = min(order.remaining_size, self._allowed_fill_size(order))
+            if volume_cap is not None:
+                fill_size = min(fill_size, volume_cap)
             if fill_size <= 0:
                 continue
             order.filled_size += fill_size
@@ -182,6 +192,33 @@ class PaperExecutionEngine:
         if order.side == Side.BUY:
             return order_book.best_ask is not None and order.price >= order_book.best_ask
         return order_book.best_bid is not None and order.price <= order_book.best_bid
+
+    def _maker_fill_volume(self, order: BotOrder, trades: list[Trade] | None) -> float:
+        """Volume of real market prints that would have hit our resting quote.
+
+        A resting BUY fills when the market trades at or below our bid; a
+        resting SELL fills when it trades at or above our ask. A per-order
+        watermark ensures each print is only counted once even though the same
+        recent-trades feed is seen on multiple cycles.
+        """
+        if not trades:
+            return 0.0
+        cutoff = self._maker_cursor.get(order.client_order_id, order.created_at - timedelta(seconds=1))
+        volume = 0.0
+        latest = cutoff
+        for trade in trades:
+            timestamp = trade.timestamp
+            if timestamp.tzinfo is None:
+                timestamp = timestamp.replace(tzinfo=UTC)
+            if timestamp <= cutoff:
+                continue
+            latest = max(latest, timestamp)
+            if order.side == Side.BUY and trade.price <= order.price:
+                volume += trade.size
+            elif order.side == Side.SELL and trade.price >= order.price:
+                volume += trade.size
+        self._maker_cursor[order.client_order_id] = latest
+        return volume
 
     def _allowed_fill_size(self, order: BotOrder) -> float:
         position = self.inventory.get_position(order.market_id)
