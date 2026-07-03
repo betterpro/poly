@@ -108,6 +108,11 @@ class MarketMakingStrategy:
             return None
         if order_book.spread is None or order_book.spread <= 0:
             return None
+        # Sub-tick books (longshots under 1 cent, or favorites above 99) can't
+        # be quoted: the 0.01..0.99 price clamp would cross the real ask/bid
+        # and turn our "passive" quote into an instant taker fill.
+        if order_book.best_ask <= self.settings.min_tick or order_book.best_bid >= 1 - self.settings.min_tick:
+            return None
         if order_book.bid_depth + order_book.ask_depth < self.settings.min_liquidity:
             return None
         fair_price = self.estimate_fair_price(order_book, trades)

@@ -92,6 +92,21 @@ def test_stale_trades_are_ignored(settings, book):
     assert signal.reason == REASON_PASSIVE
 
 
+def test_sub_tick_longshot_book_is_not_quoted(settings):
+    from polymarket_mm_bot.models import BookLevel, OrderBook
+
+    strategy = MarketMakingStrategy(settings, InventoryManager(settings))
+    # Real longshot books trade below one tick (e.g. 0.008/0.009). The 0.01
+    # price clamp would turn our bid into an instant taker fill above the ask.
+    book = OrderBook(
+        market_id="m1",
+        token_id="yes-token",
+        bids=[BookLevel(price=0.008, size=5000)],
+        asks=[BookLevel(price=0.009, size=5000)],
+    )
+    assert strategy.build_signal("m1", book, []) is None
+
+
 def test_side_inferred_from_midpoint_when_missing(settings, book):
     strategy = MarketMakingStrategy(settings, InventoryManager(settings))
     # No side info, but every trade printed above mid: buyer-initiated sweep.

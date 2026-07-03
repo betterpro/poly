@@ -78,6 +78,28 @@ async def test_unwind_quotes_sell_for_position_in_unselected_market(settings, ma
     assert sells[0].size == 10
 
 
+async def test_unwind_exits_sub_penny_longshot_position(settings, market):
+    from polymarket_mm_bot.models import BookLevel, OrderBook
+
+    inventory = InventoryManager(settings)
+    execution = PaperExecutionEngine(settings, inventory, RiskEngine(settings, inventory))
+    inventory.get_position("m1").yes_size = 10
+    inventory.get_position("m1").avg_yes_price = 0.01
+    book = OrderBook(
+        market_id="m1",
+        token_id="yes-token",
+        bids=[BookLevel(price=0.008, size=5000)],
+        asks=[BookLevel(price=0.009, size=5000)],
+    )
+
+    await bot_main._unwind_orphaned_positions(
+        settings, inventory, execution, [market], [], {"m1": book}, {"m1": []}
+    )
+
+    # The exit is quoted below one cent, crossing the bid, so it fills at once.
+    assert inventory.get_position("m1").yes_size == 0
+
+
 async def test_unwind_skips_selected_markets(settings, market, book):
     inventory = InventoryManager(settings)
     execution = PaperExecutionEngine(settings, inventory, RiskEngine(settings, inventory))

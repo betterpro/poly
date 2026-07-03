@@ -130,10 +130,11 @@ async def _unwind_orphaned_positions(
         )
         if has_open_sell:
             continue
-        ask = round_to_tick(
-            clamp(max(book.best_ask - settings.min_tick, book.best_bid), 0.01, 0.99),
-            settings.min_tick,
-        )
+        # Quote one tick inside the ask when possible, otherwise cross to the
+        # bid so the position actually exits. Sub-penny books (longshots) are
+        # allowed here: Polymarket supports 0.001 ticks at the extremes, and
+        # clamping to 0.01 would leave the exit resting above the entire book.
+        ask = round(clamp(max(book.best_ask - settings.min_tick, book.best_bid), 0.001, 0.999), 3)
         size = min(position.yes_size, settings.max_order_size)
         await execution.create_order(position.market_id, Side.SELL, ask, size, market.yes_token_id)
         logger.info("unwind_quote_placed", market_id=position.market_id, price=ask, size=size)
