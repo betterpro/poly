@@ -120,6 +120,76 @@ def _normalized_pnl(snapshot: dict[str, Any]) -> dict[str, float]:
     return {"realized": realized, "unrealized": unrealized, "total": total}
 
 
+def _fill_notional(fill: dict[str, Any]) -> float:
+    value = _as_float(fill.get("value"))
+    if value:
+        return value
+    return _as_float(fill.get("size")) * _as_float(fill.get("price"))
+
+
+def _compute_pnl_summary(snapshot: dict[str, Any], starting_capital: float) -> dict[str, float]:
+    pnl_values = _normalized_pnl(snapshot)
+    realized = pnl_values["realized"]
+    unrealized = pnl_values["unrealized"]
+    total = pnl_values["total"]
+
+    position_credit = sum(
+        _as_float(_normalize_position_payload(dict(position)).get("gross_exposure"))
+        for position in snapshot.get("positions", [])
+    )
+    open_order_credit = 0.0
+    for order in snapshot.get("orders", []):
+        side = str(order.get("side", "")).lower()
+        status = str(order.get("status", "")).lower()
+        if side != "buy" or status not in {"open", "partially_filled"}:
+            continue
+        open_order_credit += _as_float(_normalize_order_payload(dict(order)).get("remaining_notional"))
+
+    total_bought = 0.0
+    total_sold = 0.0
+    for fill in snapshot.get("recent_fills", []):
+        notional = _fill_notional(fill)
+        side = str(fill.get("side", "")).lower()
+        if side == "buy":
+            total_bought += notional
+        elif side == "sell":
+            total_sold += notional
+
+    capital_deployed = position_credit + open_order_credit
+    return {
+        "profit": round(max(0.0, realized) + max(0.0, unrealized), 4),
+        "loss": round(abs(min(0.0, realized)) + abs(min(0.0, unrealized)), 4),
+        "position_credit": round(position_credit, 4),
+        "open_order_credit": round(open_order_credit, 4),
+        "capital_deployed": round(capital_deployed, 4),
+        "total_bought": round(total_bought, 4),
+        "total_sold": round(total_sold, 4),
+        "starting_capital": round(starting_capital, 4),
+        "available_credit": round(starting_capital + total - capital_deployed, 4),
+    }
+
+
+def _build_pnl_payload(snapshot: dict[str, Any], starting_capital: float) -> dict[str, Any]:
+    pnl_values = _normalized_pnl(snapshot)
+    realized = pnl_values["realized"]
+    unrealized = pnl_values["unrealized"]
+    total = pnl_values["total"]
+    tracking = load_daily_pnl_tracking()
+    if tracking and tracking.get("baseline") is not None:
+        daily_pnl = total - _as_float(tracking.get("baseline"))
+    else:
+        daily_pnl = _as_float(snapshot.get("daily_pnl"))
+    return {
+        "daily_pnl": daily_pnl,
+        "total_pnl": total,
+        "realized_pnl": realized,
+        "unrealized_pnl": unrealized,
+        "daily_pnl_reset_at": snapshot.get("daily_pnl_reset_at") or (tracking or {}).get("reset_at"),
+        "daily_pnl_baseline": (tracking or {}).get("baseline"),
+        **_compute_pnl_summary(snapshot, starting_capital),
+    }
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     logger.info("dashboard_startup_begin")
@@ -244,33 +314,14 @@ def create_app() -> FastAPI:
     @app.get("/pnl")
     async def pnl() -> dict:
         snapshot = _status()
-        pnl_values = _normalized_pnl(snapshot)
-        realized = pnl_values["realized"]
-        unrealized = pnl_values["unrealized"]
-        total = pnl_values["total"]
-        tracking = load_daily_pnl_tracking()
-        if tracking and tracking.get("baseline") is not None:
-            daily_pnl = total - _as_float(tracking.get("baseline"))
-        else:
-            daily_pnl = _as_float(snapshot.get("daily_pnl"))
-        return {
-            "daily_pnl": daily_pnl,
-            "total_pnl": total,
-            "realized_pnl": realized,
-            "unrealized_pnl": unrealized,
-            "daily_pnl_reset_at": snapshot.get("daily_pnl_reset_at") or (tracking or {}).get("reset_at"),
-            "daily_pnl_baseline": (tracking or {}).get("baseline"),
-        }
+        return _build_pnl_payload(snapshot, settings.starting_capital)
 
     @app.post("/pnl/reset-daily")
     async def reset_daily_pnl() -> dict:
         if not database_ok():
             raise HTTPException(status_code=503, detail="Database unreachable.")
         snapshot = _status()
-        pnl_values = _normalized_pnl(snapshot)
-        realized = pnl_values["realized"]
-        unrealized = pnl_values["unrealized"]
-        total = pnl_values["total"]
+        total = _normalized_pnl(snapshot)["total"]
         try:
             result = reset_daily_pnl_baseline(total)
         except Exception as exc:
@@ -278,9 +329,7 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=503, detail="Could not reset daily PnL baseline.") from exc
         return {
             **result,
-            "total_pnl": total,
-            "realized_pnl": realized,
-            "unrealized_pnl": unrealized,
+            **_build_pnl_payload(snapshot, settings.starting_capital),
         }
 
     @app.get("/trading/status")

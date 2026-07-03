@@ -24,7 +24,18 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     .stat-value { font-size: 1.35rem; font-weight: 600; overflow-wrap: anywhere; }
     .stat-value.positive { color: #4ade80; }
     .stat-value.negative { color: #f87171; }
+    .positive { color: #4ade80; }
+    .negative { color: #f87171; }
     .stat-value.neutral { color: #e5e7eb; }
+    .pnl-summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 0.75rem; margin-bottom: 1.25rem; }
+    .pnl-card { background: #111827; border: 1px solid #1f2937; border-radius: 12px; padding: 1rem 1.1rem; }
+    .pnl-card.highlight { border-color: #334155; background: linear-gradient(180deg, #0f172a 0%, #111827 100%); }
+    .pnl-card.profit { border-color: #166534; }
+    .pnl-card.loss { border-color: #991b1b; }
+    .pnl-card.credit { border-color: #1e40af; }
+    .pnl-card-label { color: #94a3b8; font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 0.4rem; }
+    .pnl-card-value { font-size: 1.65rem; font-weight: 700; overflow-wrap: anywhere; }
+    .pnl-card-sub { color: #64748b; font-size: 0.76rem; margin-top: 0.35rem; line-height: 1.35; }
     .section { margin-bottom: 1.5rem; }
     .section-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.65rem; }
     .section-head h2 { margin: 0; font-size: 1rem; font-weight: 600; color: #f1f5f9; }
@@ -108,6 +119,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     <section id="overview" class="panel active">
       <p class="hint">Live bot metrics are synced from the worker every loop.</p>
       <div id="overview-content">
+        <div class="pnl-summary" id="pnl-summary"></div>
         <div class="stats" id="stats-row"></div>
         <div class="control-actions">
           <button class="danger" id="stop-trading" type="button">Stop trading</button>
@@ -120,7 +132,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         </div>
         <div class="section">
           <div class="section-head"><h2>Recent trades</h2><span id="trades-count"></span></div>
-          <p class="section-desc">Each row is a fill — a moment the bot actually bought or sold shares. <b class="side-buy">BUY</b> adds to a position, <b class="side-sell">SELL</b> reduces it. Price is per share in cents (0–100¢); a YES share pays $1 if the outcome happens. Value = shares × price.</p>
+          <p class="section-desc">Each row is a fill — a moment the bot actually bought or sold shares. <b class="side-buy">BUY</b> puts credit out (cash spent); <b class="side-sell">SELL</b> brings proceeds back. Price is per share in cents (0–100¢). The cash-flow column shows money in or out on that trade.</p>
           <div id="trades-wrap"></div>
         </div>
         <div class="section">
@@ -634,6 +646,91 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     document.getElementById("stop-trading").onclick = () => setTradingEnabled(false);
     document.getElementById("resume-trading").onclick = () => setTradingEnabled(true);
 
+    function fmtSignedMoney(n, invertSign) {
+      const v = Number(n) || 0;
+      const signed = invertSign ? -v : v;
+      const sign = signed < 0 ? "−" : signed > 0 ? "+" : "";
+      return sign + fmtMoney(Math.abs(signed));
+    }
+
+    function renderPnlSummary(pnl, health) {
+      const wrap = document.getElementById("pnl-summary");
+      if (!wrap) return;
+      const isPaper = String(health.mode_warning || "").toLowerCase().includes("paper");
+      const realized = Number(pnl.realized_pnl) || 0;
+      const unrealized = Number(pnl.unrealized_pnl) || 0;
+      const total = Number(pnl.total_pnl);
+      const net = Number.isFinite(total) ? total : realized + unrealized;
+      const profit = Number(pnl.profit) || 0;
+      const loss = Number(pnl.loss) || 0;
+      const capital = Number(pnl.capital_deployed) || 0;
+      const positionCredit = Number(pnl.position_credit) || 0;
+      const orderCredit = Number(pnl.open_order_credit) || 0;
+      const bought = Number(pnl.total_bought) || 0;
+      const sold = Number(pnl.total_sold) || 0;
+      const starting = Number(pnl.starting_capital) || 0;
+      const available = Number(pnl.available_credit);
+      const daily = Number(pnl.daily_pnl) || 0;
+      const modeLabel = isPaper ? "paper bankroll" : "starting capital";
+      const cards = [
+        {
+          cls: "highlight",
+          label: "Net P&L",
+          value: fmtMoney(net),
+          valueCls: pnlClass(net),
+          sub: `${fmtMoney(daily)} today · ${isPaper ? "simulated" : "live"}`,
+          tip: "Total profit or loss: realized (closed) plus unrealized (open positions marked to market).",
+        },
+        {
+          cls: "profit",
+          label: "Profit",
+          value: fmtMoney(profit),
+          valueCls: profit > 0 ? "positive" : "neutral",
+          sub: profit > 0 ? `${fmtMoney(Math.max(0, realized))} realized · ${fmtMoney(Math.max(0, unrealized))} unrealized` : "No gains yet",
+          tip: "Sum of all positive PnL — locked-in gains plus open mark-to-market gains.",
+        },
+        {
+          cls: "loss",
+          label: "Loss",
+          value: fmtMoney(loss),
+          valueCls: loss > 0 ? "negative" : "neutral",
+          sub: loss > 0 ? `${fmtMoney(Math.abs(Math.min(0, realized)))} realized · ${fmtMoney(Math.abs(Math.min(0, unrealized)))} unrealized` : "No losses yet",
+          tip: "Sum of all negative PnL — locked-in and open mark-to-market losses.",
+        },
+        {
+          cls: "credit",
+          label: "Credit at work",
+          value: fmtMoney(capital),
+          valueCls: "neutral",
+          sub: `${fmtMoney(positionCredit)} in positions · ${fmtMoney(orderCredit)} in open buys`,
+          tip: "Capital currently deployed: cost of held shares plus cash resting in open buy orders.",
+        },
+        {
+          cls: "",
+          label: "Available credit",
+          value: Number.isFinite(available) ? fmtMoney(available) : "—",
+          valueCls: Number.isFinite(available) ? pnlClass(available - starting) : "neutral",
+          sub: `${fmtMoney(starting)} ${modeLabel}`,
+          tip: "Estimated cash left to deploy: starting capital plus net P&L minus credit currently at work.",
+        },
+        {
+          cls: "",
+          label: "Trade volume",
+          value: fmtMoney(bought + sold),
+          valueCls: "neutral",
+          sub: `${fmtMoney(bought)} bought · ${fmtMoney(sold)} sold`,
+          tip: "Total cash that changed hands in recent fills (rolling feed, not lifetime history).",
+        },
+      ];
+      wrap.innerHTML = cards.map((c) =>
+        `<div class="pnl-card ${escapeHtml(c.cls)}" title="${escapeHtml(c.tip)}">`
+        + `<div class="pnl-card-label">${escapeHtml(c.label)}</div>`
+        + `<div class="pnl-card-value ${escapeHtml(c.valueCls)}">${escapeHtml(c.value)}</div>`
+        + `<div class="pnl-card-sub">${escapeHtml(c.sub)}</div>`
+        + `</div>`
+      ).join("");
+    }
+
     function renderStats(health, pnl, markets, orders, positions, risk, fills) {
       const row = document.getElementById("stats-row");
       const isPaper = String(health.mode_warning || "").toLowerCase().includes("paper");
@@ -732,23 +829,27 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         const sideCls = side === "buy" ? "side-buy" : "side-sell";
         const status = String(f.status || "").toLowerCase();
         const action = `${side.toUpperCase()} ${String(f.outcome || "").toUpperCase()}`.trim();
+        const notional = Number(f.value ?? (Number(f.size) * Number(f.price))) || 0;
+        const cashFlow = side === "buy"
+          ? `<span class="negative">${escapeHtml(fmtSignedMoney(notional, true))}</span><div class="stat-sub">credit out</div>`
+          : `<span class="positive">${escapeHtml(fmtSignedMoney(notional, false))}</span><div class="stat-sub">proceeds</div>`;
         return `<tr>
           <td>${escapeHtml(fmtTime(f.at))}</td>
           <td>${escapeHtml(label)}</td>
           <td class="${sideCls}">${escapeHtml(action)}</td>
           <td class="num">${fmtPct(f.price)}</td>
           <td class="num">${fmtNum(f.size)}</td>
-          <td class="num">${fmtMoney(f.value ?? (Number(f.size) * Number(f.price)))}</td>
+          <td class="num">${cashFlow}</td>
           <td><span class="status-pill ${escapeHtml(status)}">${escapeHtml(status.replaceAll("_", " "))}</span></td>
         </tr>`;
       }).join("");
       wrap.innerHTML = `<table class="data"><thead><tr>
         <th title="When this fill happened">Time</th>
         <th>Market</th>
-        <th title="BUY adds shares, SELL reduces them. YES/NO is which outcome the share is on.">Action</th>
+        <th title="BUY puts credit out, SELL brings proceeds back">Action</th>
         <th title="Price paid per share, in cents (0–100¢)">Price</th>
         <th title="Number of shares that traded in this fill">Shares</th>
-        <th title="Shares × price — the cash that changed hands">Value</th>
+        <th title="Cash spent on buys (−) or received on sells (+)">Cash flow</th>
         <th title="The order's state after this fill">Order</th>
       </tr></thead><tbody>${rows}</tbody></table>`;
     }
@@ -875,6 +976,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
           apiFetch("/fills").then(readListJson),
         ]);
         const marketsById = marketLookup(markets);
+        renderPnlSummary(pnl, health);
         renderStats(health, pnl, markets, orders, positions, risk, fills);
         updateTradingControls(health);
         updatePnlResetNote(pnl);
