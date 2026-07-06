@@ -110,6 +110,8 @@ class MarketScanner:
                 "near_resolution",
                 "stale_order_book",
                 "missing_order_book",
+                "spread_too_small",
+                "high_volatility",
             ]
         )
         event = "market_rejected" if rejected else "market_selected"

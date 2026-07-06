@@ -22,7 +22,7 @@ def _fresh_app(tmp_path, monkeypatch, *, password: str | None):
     db = tmp_path / "test.db"
     monkeypatch.setenv("DATABASE_URL", f"sqlite+pysqlite:///{db.as_posix()}")
     if password is None:
-        monkeypatch.delenv("DASHBOARD_PASSWORD", raising=False)
+        monkeypatch.setenv("DASHBOARD_PASSWORD", "")
     else:
         monkeypatch.setenv("DASHBOARD_PASSWORD", password)
     from polymarket_mm_bot.config.settings import get_settings

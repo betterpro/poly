@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from dataclasses import dataclass
 from datetime import UTC, datetime
 
 import structlog
@@ -19,9 +20,19 @@ from polymarket_mm_bot.models import BotOrder, Market, OrderBook, OrderStatus, P
 from polymarket_mm_bot.market_scanner import MarketScanner
 from polymarket_mm_bot.strategy import REASON_TOXIC_PULL, MarketMakingStrategy
 from polymarket_mm_bot.trading_runtime import get_trading_runtime
-from polymarket_mm_bot.utils import clamp, estimate_taker_fee, maker_fee, round_to_tick
+from polymarket_mm_bot.utils import clamp, estimate_taker_fee, maker_fee
 
 logger = structlog.get_logger()
+
+_OPEN_ORDER_STATUSES = {OrderStatus.OPEN, OrderStatus.PARTIALLY_FILLED}
+
+
+@dataclass(frozen=True)
+class _QuoteSpec:
+    side: Side
+    price: float
+    size: float
+    token_id: str | None
 
 
 def _yes_price_from_market(market: Market) -> float | None:
@@ -95,6 +106,59 @@ def _market_card_payload(market: Market, orders: list, order_size: float) -> dic
         }
     )
     return payload
+
+
+def _sell_quote_size(settings, position: Position, signal_size: float) -> float:
+    if position.yes_size <= 0:
+        return 0.0
+    limit = max(settings.max_position_per_market, 1.0)
+    if position.yes_size >= limit * 0.8:
+        return min(position.yes_size, settings.max_order_size)
+    return min(signal_size, position.yes_size)
+
+
+def _quote_matches(order: BotOrder, market_id: str, quote: _QuoteSpec) -> bool:
+    return (
+        order.market_id == market_id
+        and order.side == quote.side
+        and order.token_id == quote.token_id
+        and order.status in _OPEN_ORDER_STATUSES
+        and abs(order.price - quote.price) <= 1e-9
+        and abs(order.remaining_size - quote.size) <= 1e-9
+    )
+
+
+async def _sync_market_quotes(execution, market_id: str, quotes: list[_QuoteSpec]) -> None:
+    """Keep unchanged quotes resting and replace only stale or disabled sides."""
+    desired = [quote for quote in quotes if quote.size > 0]
+    kept_ids: set[str] = set()
+    for quote in desired:
+        match = next(
+            (
+                order
+                for order in execution.orders.values()
+                if order.client_order_id not in kept_ids and _quote_matches(order, market_id, quote)
+            ),
+            None,
+        )
+        if match is not None:
+            kept_ids.add(match.client_order_id)
+
+    for order in list(execution.orders.values()):
+        if (
+            order.market_id == market_id
+            and order.status in _OPEN_ORDER_STATUSES
+            and order.client_order_id not in kept_ids
+        ):
+            await execution.cancel_order(order.client_order_id)
+
+    kept_sides = {order.side for order in execution.orders.values() if order.client_order_id in kept_ids}
+    for quote in desired:
+        if quote.side in kept_sides:
+            continue
+        order = await execution.create_order(market_id, quote.side, quote.price, quote.size, quote.token_id)
+        if order.status in _OPEN_ORDER_STATUSES:
+            kept_sides.add(order.side)
 
 
 async def _unwind_orphaned_positions(
@@ -324,25 +388,14 @@ async def run_once() -> None:
                     strategy_status[market.condition_id] = "toxic_flow_paused"
                     logger.info("toxic_flow_quotes_pulled", market_id=market.condition_id)
                 elif signal and signal.bid_price and signal.ask_price:
-                    await execution.cancel_all_for_market(market.condition_id)
+                    quotes: list[_QuoteSpec] = []
                     if inventory.can_quote_side(market.condition_id, Side.BUY):
-                        await execution.create_order(
-                            market.condition_id,
-                            Side.BUY,
-                            signal.bid_price,
-                            signal.size,
-                            market.yes_token_id,
-                        )
+                        quotes.append(_QuoteSpec(Side.BUY, signal.bid_price, signal.size, market.yes_token_id))
                     position = inventory.get_position(market.condition_id)
-                    sell_size = min(signal.size, position.yes_size)
+                    sell_size = _sell_quote_size(settings, position, signal.size)
                     if sell_size > 0:
-                        await execution.create_order(
-                            market.condition_id,
-                            Side.SELL,
-                            signal.ask_price,
-                            sell_size,
-                            market.yes_token_id,
-                        )
+                        quotes.append(_QuoteSpec(Side.SELL, signal.ask_price, sell_size, market.yes_token_id))
+                    await _sync_market_quotes(execution, market.condition_id, quotes)
                     logger.info("strategy_signal", **signal.model_dump())
                 # Fills are only ever simulated in paper mode.
                 if settings.paper_trading:

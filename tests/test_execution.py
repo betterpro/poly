@@ -74,6 +74,15 @@ async def test_passive_buy_fills_when_market_prints_at_bid(settings, book):
     assert inventory.get_position("m1").yes_size == 6
 
 
+async def test_passive_buy_ignores_prints_before_order_creation(settings, book):
+    inventory = InventoryManager(settings)
+    execution = PaperExecutionEngine(settings, inventory, RiskEngine(settings, inventory))
+    await execution.create_order("m1", Side.BUY, 0.49, 10, "yes-token")
+    fills = await execution.simulate_fills(book, [_print(0.49, 6, seconds_from_now=-0.5)])
+    assert fills == []
+    assert inventory.get_position("m1").yes_size == 0
+
+
 async def test_passive_fill_does_not_double_count_prints(settings, book):
     inventory = InventoryManager(settings)
     execution = PaperExecutionEngine(settings, inventory, RiskEngine(settings, inventory))

@@ -140,7 +140,7 @@ class MarketMakingStrategy:
 
         skew = self.inventory.inventory_skew(market_id)
         bid = fair_price - target_spread / 2 - max(skew, 0) * self.settings.min_tick
-        ask = fair_price + target_spread / 2 - min(skew, 0) * self.settings.min_tick
+        ask = fair_price + target_spread / 2 - skew * self.settings.min_tick
 
         bid = min(bid, (order_book.best_bid or bid) + self.settings.min_tick)
         ask = max(ask, (order_book.best_ask or ask) - self.settings.min_tick)

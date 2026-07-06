@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, datetime, timedelta
-from typing import Protocol
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING, Protocol
 
 import structlog
 from sqlalchemy.orm import Session, sessionmaker
@@ -14,6 +14,9 @@ from polymarket_mm_bot.models import BotOrder, OrderBook, OrderStatus, Outcome, 
 from polymarket_mm_bot.risk import RiskEngine
 
 logger = structlog.get_logger()
+
+if TYPE_CHECKING:
+    from polymarket_mm_bot.execution.live_client import ClobGateway
 
 # LiveExecutionEngine now places and reconciles real orders through the CLOB
 # gateway. Live trading still requires PAPER_TRADING=false, LIVE_TRADING_CONFIRMED,
@@ -204,7 +207,7 @@ class PaperExecutionEngine:
         """
         if not trades:
             return 0.0
-        cutoff = self._maker_cursor.get(order.client_order_id, order.created_at - timedelta(seconds=1))
+        cutoff = self._maker_cursor.get(order.client_order_id, order.created_at)
         volume = 0.0
         latest = cutoff
         for trade in trades:

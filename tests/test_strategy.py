@@ -84,6 +84,17 @@ def test_moderate_imbalance_widens_spread_and_cuts_size(settings, book):
     assert (signal.ask_price - signal.bid_price) > (baseline.ask_price - baseline.bid_price)
 
 
+def test_long_inventory_lowers_ask(settings, book):
+    inventory = InventoryManager(settings)
+    inventory.get_position("m1").yes_size = settings.max_position_per_market
+    strategy = MarketMakingStrategy(settings, inventory)
+    flat_signal = MarketMakingStrategy(settings, InventoryManager(settings)).build_signal("m1", book, [])
+    long_signal = strategy.build_signal("m1", book, [])
+    assert flat_signal is not None
+    assert long_signal is not None
+    assert long_signal.ask_price < flat_signal.ask_price
+
+
 def test_stale_trades_are_ignored(settings, book):
     strategy = MarketMakingStrategy(settings, InventoryManager(settings))
     trades = [_trade(0.51, 20, Side.BUY, seconds_ago=600 + i) for i in range(5)]
