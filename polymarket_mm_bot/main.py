@@ -117,6 +117,14 @@ def _sell_quote_size(settings, position: Position, signal_size: float) -> float:
     return min(signal_size, position.yes_size)
 
 
+def _buy_quote_size(settings, position: Position, signal_size: float) -> float:
+    limit = max(settings.max_position_per_market, 1.0)
+    target_inventory = limit * 0.5
+    if position.yes_size >= target_inventory:
+        return 0.0
+    return min(signal_size, settings.max_order_size, target_inventory - position.yes_size)
+
+
 def _metadata_float(value) -> float | None:
     try:
         return float(value)
@@ -141,6 +149,15 @@ def _quote_matches(order: BotOrder, market_id: str, quote: _QuoteSpec) -> bool:
         and abs(order.price - quote.price) <= 1e-9
         and abs(order.remaining_size - quote.size) <= 1e-9
     )
+
+
+async def _cancel_unmanaged_stale_orders(execution, settings, managed_market_ids: set[str]) -> None:
+    now = datetime.now(UTC)
+    for order in list(execution.orders.values()):
+        if order.status not in _OPEN_ORDER_STATUSES or order.market_id in managed_market_ids:
+            continue
+        if (now - order.created_at).total_seconds() > settings.stale_order_seconds:
+            await execution.cancel_order(order.client_order_id)
 
 
 async def _sync_market_quotes(execution, market_id: str, quotes: list[_QuoteSpec]) -> None:
@@ -413,9 +430,10 @@ async def run_once() -> None:
                     logger.info("toxic_flow_quotes_pulled", market_id=market.condition_id)
                 elif signal and signal.bid_price and signal.ask_price:
                     quotes: list[_QuoteSpec] = []
-                    if inventory.can_quote_side(market.condition_id, Side.BUY):
-                        quotes.append(_QuoteSpec(Side.BUY, signal.bid_price, signal.size, market.yes_token_id))
                     position = inventory.get_position(market.condition_id)
+                    buy_size = _buy_quote_size(settings, position, signal.size)
+                    if buy_size > 0 and inventory.can_quote_side(market.condition_id, Side.BUY):
+                        quotes.append(_QuoteSpec(Side.BUY, signal.bid_price, buy_size, market.yes_token_id))
                     sell_size = _sell_quote_size(settings, position, signal.size)
                     if sell_size > 0:
                         quotes.append(_QuoteSpec(Side.SELL, signal.ask_price, sell_size, market.yes_token_id))
@@ -425,7 +443,13 @@ async def run_once() -> None:
                 if settings.paper_trading:
                     await execution.simulate_fills(book, trades.get(market.condition_id, []))
             await _unwind_orphaned_positions(settings, inventory, execution, markets, selected, books, trades)
-            await execution.cancel_stale_orders()
+            managed_market_ids = {market.condition_id for market in selected}
+            managed_market_ids.update(
+                position.market_id
+                for position in inventory.positions.values()
+                if position.yes_size > 0 or position.no_size > 0
+            )
+            await _cancel_unmanaged_stale_orders(execution, settings, managed_market_ids)
             # In live mode, learn fills by reconciling against the exchange.
             if not settings.paper_trading:
                 await execution.sync_fills()

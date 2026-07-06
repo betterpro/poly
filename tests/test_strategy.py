@@ -1,7 +1,7 @@
 from datetime import UTC, datetime, timedelta
 
 from polymarket_mm_bot.inventory import InventoryManager
-from polymarket_mm_bot.models import Side, Trade
+from polymarket_mm_bot.models import BookLevel, OrderBook, Side, Trade
 from polymarket_mm_bot.strategy import (
     REASON_PASSIVE,
     REASON_TOXIC_PULL,
@@ -25,9 +25,50 @@ def test_strategy_builds_non_crossing_quotes(settings, book):
     signal = strategy.build_signal("m1", book, [])
     assert signal is not None
     assert signal.bid_price < signal.ask_price
+    assert signal.bid_price <= book.best_bid
+    assert signal.ask_price >= book.best_ask
     assert 0.01 <= signal.bid_price <= 0.99
     assert 0.01 <= signal.ask_price <= 0.99
     assert signal.reason == REASON_PASSIVE
+
+
+def test_strategy_never_crosses_one_tick_spread(settings):
+    book = OrderBook(
+        market_id="m1",
+        token_id="yes-token",
+        bids=[BookLevel(price=0.12, size=5000)],
+        asks=[BookLevel(price=0.13, size=5000)],
+    )
+    strategy = MarketMakingStrategy(settings, InventoryManager(settings))
+    signal = strategy.build_signal("m1", book, [])
+    assert signal is not None
+    assert signal.bid_price == 0.12
+    assert signal.ask_price == 0.14
+
+
+def test_fair_price_ignores_other_token_trades(settings):
+    book = OrderBook(
+        market_id="m1",
+        token_id="yes-token",
+        bids=[BookLevel(price=0.12, size=5000)],
+        asks=[BookLevel(price=0.13, size=5000)],
+    )
+    trades = [
+        Trade(
+            market_id="m1",
+            token_id="no-token",
+            price=0.88,
+            size=100,
+            side=Side.BUY,
+            timestamp=datetime.now(UTC) - timedelta(seconds=5),
+        )
+        for _ in range(5)
+    ]
+    strategy = MarketMakingStrategy(settings, InventoryManager(settings))
+    signal = strategy.build_signal("m1", book, trades)
+    assert signal is not None
+    assert signal.fair_price in {0.12, 0.13}
+    assert signal.ask_price == 0.14
 
 
 def test_balanced_flow_keeps_passive_quotes(settings, book):
@@ -84,7 +125,7 @@ def test_moderate_imbalance_widens_spread_and_cuts_size(settings, book):
     assert (signal.ask_price - signal.bid_price) > (baseline.ask_price - baseline.bid_price)
 
 
-def test_long_inventory_lowers_ask(settings, book):
+def test_long_inventory_reduces_bid_without_crossing_ask(settings, book):
     inventory = InventoryManager(settings)
     inventory.get_position("m1").yes_size = settings.max_position_per_market
     strategy = MarketMakingStrategy(settings, inventory)
@@ -92,7 +133,8 @@ def test_long_inventory_lowers_ask(settings, book):
     long_signal = strategy.build_signal("m1", book, [])
     assert flat_signal is not None
     assert long_signal is not None
-    assert long_signal.ask_price < flat_signal.ask_price
+    assert long_signal.bid_price < flat_signal.bid_price
+    assert long_signal.ask_price >= book.best_ask
 
 
 def test_stale_trades_are_ignored(settings, book):

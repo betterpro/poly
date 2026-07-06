@@ -1,5 +1,25 @@
-from polymarket_mm_bot.main import _QuoteSpec, _metadata_quoteable, _quote_matches, _sell_quote_size, _sync_market_quotes
+from datetime import UTC, datetime, timedelta
+
+from polymarket_mm_bot.main import (
+    _QuoteSpec,
+    _buy_quote_size,
+    _cancel_unmanaged_stale_orders,
+    _metadata_quoteable,
+    _quote_matches,
+    _sell_quote_size,
+    _sync_market_quotes,
+)
 from polymarket_mm_bot.models import BotOrder, Market, OrderStatus, Position, Side
+
+
+def test_buy_quote_size_tapers_before_inventory_limit(settings):
+    position = Position(market_id="m1", yes_size=(settings.max_position_per_market * 0.5) - 4)
+    assert _buy_quote_size(settings, position, signal_size=10) == 4
+
+
+def test_buy_quote_size_stops_at_target_inventory(settings):
+    position = Position(market_id="m1", yes_size=settings.max_position_per_market * 0.5)
+    assert _buy_quote_size(settings, position, signal_size=10) == 0
 
 
 def test_sell_quote_size_uses_max_clip_when_inventory_is_high(settings):
@@ -126,3 +146,30 @@ async def test_sync_market_quotes_cancels_disabled_side():
     assert execution.canceled == ["buy"]
     assert execution.created == []
     assert sell.status == OrderStatus.OPEN
+
+
+async def test_cancel_unmanaged_stale_orders_keeps_managed_market(settings):
+    managed = BotOrder(
+        client_order_id="managed",
+        market_id="m1",
+        token_id="yes-token",
+        side=Side.BUY,
+        price=0.49,
+        size=5,
+        created_at=datetime.now(UTC) - timedelta(seconds=settings.stale_order_seconds + 1),
+    )
+    unmanaged = BotOrder(
+        client_order_id="unmanaged",
+        market_id="m2",
+        token_id="yes-token",
+        side=Side.BUY,
+        price=0.49,
+        size=5,
+        created_at=datetime.now(UTC) - timedelta(seconds=settings.stale_order_seconds + 1),
+    )
+    execution = FakeExecution([managed, unmanaged])
+
+    await _cancel_unmanaged_stale_orders(execution, settings, {"m1"})
+
+    assert execution.canceled == ["unmanaged"]
+    assert managed.status == OrderStatus.OPEN

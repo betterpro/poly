@@ -26,6 +26,29 @@ class MarketMakingStrategy:
         self.settings = settings
         self.inventory = inventory
 
+    def _recent_token_trades(
+        self,
+        order_book: OrderBook,
+        trades: list[Trade] | None,
+        now: datetime | None = None,
+    ) -> list[Trade]:
+        if not trades:
+            return []
+        now = now or datetime.now(UTC)
+        cutoff = now - timedelta(seconds=self.settings.toxicity_window_seconds)
+        recent = []
+        for trade in trades:
+            timestamp = trade.timestamp
+            if timestamp.tzinfo is None:
+                timestamp = timestamp.replace(tzinfo=UTC)
+            if timestamp < cutoff or trade.size <= 0:
+                continue
+            if trade.token_id and order_book.token_id and trade.token_id != order_book.token_id:
+                continue
+            recent.append(trade)
+        recent.sort(key=lambda trade: trade.timestamp)
+        return recent
+
     def estimate_fair_price(self, order_book: OrderBook, trades: list[Trade] | None = None) -> float | None:
         if order_book.best_bid is None or order_book.best_ask is None:
             return None
@@ -34,9 +57,10 @@ class MarketMakingStrategy:
         imbalance = 0.5 if total_depth <= 0 else order_book.bid_depth / total_depth
         imbalance_adjustment = (imbalance - 0.5) * self.settings.min_tick
         trade_adjustment = 0.0
-        if trades:
-            recent = trades[-10:]
-            trade_adjustment = (sum(trade.price for trade in recent) / len(recent) - midpoint) * 0.25
+        recent = self._recent_token_trades(order_book, trades)[-10:]
+        if recent:
+            raw_adjustment = (sum(trade.price for trade in recent) / len(recent) - midpoint) * 0.25
+            trade_adjustment = clamp(raw_adjustment, -self.settings.min_tick, self.settings.min_tick)
         return clamp(midpoint + imbalance_adjustment + trade_adjustment, 0.01, 0.99)
 
     def assess_flow_toxicity(
@@ -56,14 +80,8 @@ class MarketMakingStrategy:
         if not trades:
             return FlowToxicity()
         now = now or datetime.now(UTC)
-        cutoff = now - timedelta(seconds=self.settings.toxicity_window_seconds)
-        recent = []
-        for trade in trades:
-            timestamp = trade.timestamp
-            if timestamp.tzinfo is None:
-                timestamp = timestamp.replace(tzinfo=UTC)
-            if timestamp >= cutoff and trade.size > 0:
-                recent.append((timestamp, trade))
+        recent_trades = self._recent_token_trades(order_book, trades, now)
+        recent = [(trade.timestamp if trade.timestamp.tzinfo else trade.timestamp.replace(tzinfo=UTC), trade) for trade in recent_trades]
         if len(recent) < self.settings.toxicity_min_trades:
             return FlowToxicity(trade_count=len(recent))
         recent.sort(key=lambda item: item[0])
@@ -142,8 +160,10 @@ class MarketMakingStrategy:
         bid = fair_price - target_spread / 2 - max(skew, 0) * self.settings.min_tick
         ask = fair_price + target_spread / 2 - skew * self.settings.min_tick
 
-        bid = min(bid, (order_book.best_bid or bid) + self.settings.min_tick)
-        ask = max(ask, (order_book.best_ask or ask) - self.settings.min_tick)
+        # Stay passive: joining the current best bid/ask is acceptable, but
+        # crossing the spread turns the paper bot into a taker and distorts PnL.
+        bid = min(bid, order_book.best_bid)
+        ask = max(ask, order_book.best_ask)
         bid = round_to_tick(clamp(bid, 0.01, 0.99), self.settings.min_tick)
         ask = round_to_tick(clamp(ask, 0.01, 0.99), self.settings.min_tick)
 
