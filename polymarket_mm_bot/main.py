@@ -117,6 +117,21 @@ def _sell_quote_size(settings, position: Position, signal_size: float) -> float:
     return min(signal_size, position.yes_size)
 
 
+def _metadata_float(value) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _metadata_quoteable(settings, market: Market) -> bool:
+    bid = _metadata_float(market.metadata.get("bestBid"))
+    ask = _metadata_float(market.metadata.get("bestAsk"))
+    if bid is None or ask is None:
+        return False
+    return ask - bid >= settings.min_spread and ask > settings.min_tick and bid < 1 - settings.min_tick
+
+
 def _quote_matches(order: BotOrder, market_id: str, quote: _QuoteSpec) -> bool:
     return (
         order.market_id == market_id
@@ -220,14 +235,21 @@ def _record_risk_event(runtime, market_id: str | None, code: str, message: str |
 
 async def _load_books_and_trades(
     data: PolymarketDataClient,
+    settings,
     markets: list[Market],
     *,
-    limit: int = 40,
+    limit: int = 80,
     include_market_ids: set[str] | None = None,
 ) -> tuple[dict[str, OrderBook], dict[str, list], int]:
     include_market_ids = include_market_ids or set()
     sorted_markets = sorted(markets, key=lambda market: (market.liquidity, market.volume), reverse=True)
-    candidates_by_id = {market.condition_id: market for market in sorted_markets[:limit]}
+    quoteable_markets = [market for market in sorted_markets if _metadata_quoteable(settings, market)]
+    candidate_pool = [*quoteable_markets, *sorted_markets]
+    candidates_by_id: dict[str, Market] = {}
+    for market in candidate_pool:
+        if len(candidates_by_id) >= limit:
+            break
+        candidates_by_id[market.condition_id] = market
     for market in sorted_markets:
         if market.condition_id in include_market_ids:
             candidates_by_id[market.condition_id] = market
@@ -326,11 +348,13 @@ async def run_once() -> None:
         }
         books, trades, market_data_errors = await _load_books_and_trades(
             data,
+            settings,
             markets,
             include_market_ids=position_market_ids,
         )
         api_blocked = False
-        for _ in range(market_data_errors):
+        api_error_signals = 1 if market_data_errors and not books else 0
+        for _ in range(api_error_signals):
             decision = risk.record_api_error()
             if not decision.allowed:
                 await execution.cancel_all_open_orders()
@@ -338,7 +362,7 @@ async def run_once() -> None:
                     _record_risk_event(runtime, None, decision.code)
                 api_blocked = True
                 break
-        if market_data_errors == 0:
+        if market_data_errors == 0 or books:
             risk.reset_api_errors()
 
         selected = scanner.select_markets(markets, books, trades)

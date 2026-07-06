@@ -1,5 +1,5 @@
-from polymarket_mm_bot.main import _QuoteSpec, _quote_matches, _sell_quote_size, _sync_market_quotes
-from polymarket_mm_bot.models import BotOrder, OrderStatus, Position, Side
+from polymarket_mm_bot.main import _QuoteSpec, _metadata_quoteable, _quote_matches, _sell_quote_size, _sync_market_quotes
+from polymarket_mm_bot.models import BotOrder, Market, OrderStatus, Position, Side
 
 
 def test_sell_quote_size_uses_max_clip_when_inventory_is_high(settings):
@@ -24,6 +24,22 @@ def test_quote_matches_requires_exact_resting_quote():
 
     assert _quote_matches(order, "m1", _QuoteSpec(Side.BUY, 0.49, 5, "yes-token"))
     assert not _quote_matches(order, "m1", _QuoteSpec(Side.BUY, 0.48, 5, "yes-token"))
+
+
+def test_metadata_quoteable_requires_configured_spread(settings):
+    market = Market(
+        condition_id="m1",
+        question="Will this be quoteable?",
+        metadata={"bestBid": 0.19, "bestAsk": 0.2},
+    )
+    tight_market = Market(
+        condition_id="m2",
+        question="Will this be too tight?",
+        metadata={"bestBid": 0.002, "bestAsk": 0.003},
+    )
+
+    assert _metadata_quoteable(settings, market)
+    assert not _metadata_quoteable(settings, tight_market)
 
 
 class FakeExecution:

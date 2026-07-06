@@ -25,6 +25,7 @@ class MarketScanner:
         recent_trades: list[Trade] | None = None,
     ) -> MarketScore:
         reasons: list[str] = []
+        now = datetime.now(UTC)
         if not market.active or market.closed or market.paused:
             return MarketScore(market_id=market.condition_id, score=0, rejected=True, reasons=["inactive"])
         if not self._category_allowed(market):
@@ -54,7 +55,7 @@ class MarketScanner:
         stale_score = 10.0
         if order_book:
             spread = order_book.spread
-            if spread is None or spread <= 0:
+            if spread is None or spread < self.settings.min_spread:
                 reasons.append("spread_too_small")
             elif spread > 0.15:
                 reasons.append("spread_manipulation_risk")
@@ -63,12 +64,19 @@ class MarketScanner:
                 spread_score = clamp((0.08 - abs(spread - 0.03)) / 0.08 * 15, 0, 15)
             depth = order_book.bid_depth + order_book.ask_depth
             depth_score = clamp(depth / max(self.settings.min_liquidity, 1) * 15, 0, 15)
-            age = (datetime.now(UTC) - order_book.updated_at).total_seconds()
+            age = (now - order_book.updated_at).total_seconds()
             stale_score = 0 if age > self.settings.stale_data_seconds else 10
             if stale_score == 0:
                 reasons.append("stale_order_book")
 
-        trades = recent_trades or []
+        cutoff = now.timestamp() - self.settings.toxicity_window_seconds
+        trades = []
+        for trade in recent_trades or []:
+            timestamp = trade.timestamp
+            if timestamp.tzinfo is None:
+                timestamp = timestamp.replace(tzinfo=UTC)
+            if timestamp.timestamp() >= cutoff:
+                trades.append(trade)
         trade_count_score = clamp(len(trades) / 50 * 10, 0, 10)
         volatility_score = 10.0
         if len(trades) >= 5:
@@ -80,7 +88,7 @@ class MarketScanner:
 
         time_score = 10.0
         if market.end_date:
-            hours = (market.end_date - datetime.now(UTC)).total_seconds() / 3600
+            hours = (market.end_date - now).total_seconds() / 3600
             if hours < self.settings.min_time_to_resolution_hours and not self.settings.allow_near_resolution:
                 reasons.append("near_resolution")
                 time_score = 0
