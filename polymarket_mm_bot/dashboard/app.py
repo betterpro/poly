@@ -16,6 +16,7 @@ from polymarket_mm_bot.config.runtime_settings import (
     save_editable_settings,
 )
 from polymarket_mm_bot.config.settings import get_settings
+from polymarket_mm_bot.dashboard.database_reset import clean_runtime_database
 from polymarket_mm_bot.dashboard.db_health import database_ok, settings_persisted
 from polymarket_mm_bot.dashboard.pages import DASHBOARD_HTML
 from polymarket_mm_bot.dashboard.snapshot_cache import (
@@ -290,6 +291,16 @@ def create_app() -> FastAPI:
                 status_code=503,
                 detail="Could not save settings. Check DATABASE_URL and Railway Postgres access.",
             ) from exc
+
+    @app.post("/settings/clean-database")
+    async def clean_database() -> dict:
+        if not database_ok():
+            raise HTTPException(status_code=503, detail="Database unreachable.")
+        try:
+            return clean_runtime_database()
+        except Exception as exc:
+            logger.warning("database_clean_failed", error=str(exc))
+            raise HTTPException(status_code=503, detail="Could not clean database.") from exc
 
     @app.get("/markets")
     async def markets():

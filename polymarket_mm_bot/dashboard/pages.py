@@ -177,6 +177,14 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         <button class="primary" id="save-settings" type="button">Save settings</button>
         <span class="message" id="settings-message"></span>
       </div>
+      <div class="section" id="database-section">
+        <div class="section-head"><h2>Database</h2><span>paper reset</span></div>
+        <p class="hint">Clean orders, positions, PnL history, risk events, market cache, and the current dashboard snapshot. Settings are kept and trading is paused.</p>
+        <div class="actions">
+          <button class="danger" id="clean-database" type="button">Clean database</button>
+          <span class="message" id="database-message"></span>
+        </div>
+      </div>
     </section>
   </main>
   <script>
@@ -515,6 +523,36 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     }
 
     document.getElementById("save-settings").onclick = saveSettings;
+
+    async function cleanDatabase() {
+      const msg = document.getElementById("database-message");
+      const button = document.getElementById("clean-database");
+      if (!confirm("Clean all paper trading database state? This removes orders, positions, PnL history, fills, risk events, market cache, and pauses trading.")) {
+        return;
+      }
+      msg.className = "message";
+      msg.textContent = "Cleaning...";
+      button.disabled = true;
+      try {
+        const res = await apiFetch("/settings/clean-database", { method: "POST" });
+        const body = await readJsonResponse(res);
+        if (!res.ok) {
+          throw new Error(typeof body.detail === "string" ? body.detail : "Clean failed");
+        }
+        const deleted = body.deleted || {};
+        const count = Object.values(deleted).reduce((sum, value) => sum + (Number(value) || 0), 0);
+        msg.textContent = `Cleaned ${count} rows. Trading paused.`;
+        await refreshOverview();
+        await loadSettingsStatus();
+      } catch (err) {
+        msg.className = "message error";
+        msg.textContent = String(err && err.message || err);
+      } finally {
+        button.disabled = false;
+      }
+    }
+
+    document.getElementById("clean-database").onclick = cleanDatabase;
 
     function escapeHtml(value) {
       return String(value ?? "")
