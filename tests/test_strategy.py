@@ -3,6 +3,7 @@ from datetime import UTC, datetime, timedelta
 from polymarket_mm_bot.inventory import InventoryManager
 from polymarket_mm_bot.models import BookLevel, OrderBook, Side, Trade
 from polymarket_mm_bot.strategy import (
+    REASON_DOWNTREND_EXIT,
     REASON_PASSIVE,
     REASON_TOXIC_PULL,
     REASON_TOXIC_WIDEN,
@@ -167,3 +168,61 @@ def test_side_inferred_from_midpoint_when_missing(settings, book):
     signal = strategy.build_signal("m1", book, trades)
     assert signal is not None
     assert signal.reason == REASON_TOXIC_PULL
+
+
+def test_microprice_leans_toward_heavy_bid_side(settings):
+    book = OrderBook(
+        market_id="m1",
+        token_id="yes-token",
+        bids=[BookLevel(price=0.49, size=900)],
+        asks=[BookLevel(price=0.52, size=100)],
+    )
+    strategy = MarketMakingStrategy(settings, InventoryManager(settings))
+    fair = strategy.estimate_fair_price(book)
+    midpoint = (0.49 + 0.52) / 2
+    assert fair is not None
+    assert fair > midpoint
+    assert 0.49 <= fair <= 0.52
+
+
+def test_mild_downtrend_pauses_bid_but_keeps_ask(settings, book):
+    inventory = InventoryManager(settings)
+    inventory.get_position("m1").yes_size = 10
+    strategy = MarketMakingStrategy(settings, inventory)
+    # Balanced buy/sell volume (no toxic imbalance) but price drifted two
+    # ticks lower inside the window: stop buying, keep quoting the exit.
+    trades = [
+        _trade(0.52, 10, Side.BUY, seconds_ago=25),
+        _trade(0.51, 10, Side.SELL, seconds_ago=20),
+        _trade(0.51, 10, Side.BUY, seconds_ago=15),
+        _trade(0.50, 10, Side.SELL, seconds_ago=5),
+    ]
+    signal = strategy.build_signal("m1", book, trades)
+    assert signal is not None
+    assert signal.reason == REASON_DOWNTREND_EXIT
+    assert signal.bid_price is None
+    assert signal.ask_price is not None
+
+
+def test_calm_market_ask_floors_at_break_even(settings, book):
+    inventory = InventoryManager(settings)
+    position = inventory.get_position("m1")
+    position.yes_size = 10
+    position.avg_yes_price = 0.60
+    strategy = MarketMakingStrategy(settings, inventory)
+    signal = strategy.build_signal("m1", book, [])
+    assert signal is not None
+    # Entry at 0.60: the resting ask must not lock in a loss in a calm market.
+    assert signal.ask_price >= 0.60 + settings.min_exit_edge_ticks * settings.min_tick
+
+
+def test_inventory_pressure_drops_break_even_floor(settings, book):
+    inventory = InventoryManager(settings)
+    position = inventory.get_position("m1")
+    # 45 of max 50: inventory pressure outranks holding out for break-even.
+    position.yes_size = 45
+    position.avg_yes_price = 0.60
+    strategy = MarketMakingStrategy(settings, inventory)
+    signal = strategy.build_signal("m1", book, [])
+    assert signal is not None
+    assert signal.ask_price == book.best_ask

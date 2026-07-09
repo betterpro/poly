@@ -8,7 +8,7 @@ import structlog
 from sqlalchemy.orm import Session, sessionmaker
 
 from polymarket_mm_bot.config import Settings
-from polymarket_mm_bot.database.runtime_state import save_order, save_position
+from polymarket_mm_bot.database.runtime_state import save_fill, save_order, save_position
 from polymarket_mm_bot.inventory import InventoryManager
 from polymarket_mm_bot.models import BotOrder, OrderBook, OrderStatus, Outcome, Side, Trade
 from polymarket_mm_bot.risk import RiskEngine
@@ -54,6 +54,21 @@ def _safe_persist_order(session_factory: sessionmaker[Session] | None, order: Bo
             save_order(session, order)
     except Exception as exc:
         logger.warning("order_persist_failed", client_order_id=order.client_order_id, error=str(exc))
+
+
+def _safe_persist_fill(
+    session_factory: sessionmaker[Session] | None,
+    order: BotOrder,
+    fill_size: float,
+    fill_price: float,
+) -> None:
+    if session_factory is None:
+        return
+    try:
+        with session_factory() as session:
+            save_fill(session, order, fill_size, fill_price)
+    except Exception as exc:
+        logger.warning("fill_persist_failed", client_order_id=order.client_order_id, error=str(exc))
 
 
 def _safe_persist_position(
@@ -187,6 +202,7 @@ class PaperExecutionEngine:
             self.inventory.apply_fill(order, fill_size, order.price)
             self._persist_order(order)
             self._persist_position(order.market_id)
+            _safe_persist_fill(self.session_factory, order, fill_size, order.price)
             record_fill(self.recent_fills, order, fill_size, order.price)
             filled.append(order)
             logger.info("fill_received", client_order_id=order.client_order_id, fill_size=fill_size, price=order.price)
@@ -453,6 +469,7 @@ class LiveExecutionEngine:
             self._persist_order(order)
             if filled_changed:
                 self._persist_position(order.market_id)
+                _safe_persist_fill(self.session_factory, order, delta_size, fill_price)
                 record_fill(self.recent_fills, order, delta_size, fill_price)
                 updated.append(order)
         return updated

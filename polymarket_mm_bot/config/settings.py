@@ -73,6 +73,20 @@ class Settings(BaseSettings):
     toxicity_spread_multiplier: float = 2.0
     toxicity_size_multiplier: float = 0.5
 
+    # Profitability / inventory tuning.
+    # How strongly inventory shifts quotes, as a fraction of the half-spread at
+    # full inventory (old behaviour was a fixed one-tick shift).
+    inventory_skew_spread_fraction: float = 1.5
+    # Stop adding inventory when price has drifted down this many ticks inside
+    # the toxicity window (sell side stays quoted so inventory can exit).
+    momentum_buy_pause_ticks: float = 2.0
+    # Floor resting asks at avg cost + this many ticks while inventory is
+    # comfortable, so calm-market exits realize a profit instead of a loss.
+    # Set to 0 to disable.
+    min_exit_edge_ticks: float = 1.0
+    # How often the bot writes a PnL history row to pnl_snapshots.
+    pnl_snapshot_interval_seconds: int = 60
+
     allowed_categories: list[str] = Field(default_factory=lambda: list(DEFAULT_ALLOWED_CATEGORIES))
 
     run_mode: Literal["paper", "live"] = "paper"

@@ -1,4 +1,5 @@
 from polymarket_mm_bot.strategy.market_maker import (
+    REASON_DOWNTREND_EXIT,
     REASON_PASSIVE,
     REASON_TOXIC_PULL,
     REASON_TOXIC_WIDEN,
@@ -7,6 +8,7 @@ from polymarket_mm_bot.strategy.market_maker import (
 )
 
 __all__ = [
+    "REASON_DOWNTREND_EXIT",
     "REASON_PASSIVE",
     "REASON_TOXIC_PULL",
     "REASON_TOXIC_WIDEN",

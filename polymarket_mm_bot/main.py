@@ -13,7 +13,7 @@ from polymarket_mm_bot.dashboard.trading_control import is_trading_enabled
 from polymarket_mm_bot.dashboard.state import state
 from polymarket_mm_bot.dashboard.status_store import save_status_snapshot
 from polymarket_mm_bot.database.migrate import run_migrations
-from polymarket_mm_bot.database.runtime_state import save_risk_event
+from polymarket_mm_bot.database.runtime_state import load_recent_fills, save_pnl_snapshot, save_risk_event
 from polymarket_mm_bot.data import PolymarketDataClient
 from polymarket_mm_bot.logging import configure_logging
 from polymarket_mm_bot.models import BotOrder, Market, OrderBook, OrderStatus, Position, Side
@@ -263,6 +263,28 @@ async def _unwind_orphaned_positions(
             await execution.simulate_fills(book, trades.get(position.market_id, []))
 
 
+_last_pnl_snapshot_at: datetime | None = None
+
+
+def _persist_pnl_snapshot(runtime, settings, *, daily: float, total: float, unrealized: float, realized: float) -> None:
+    """Write a PnL history row at most once per configured interval."""
+    global _last_pnl_snapshot_at
+    if runtime.session_factory is None:
+        return
+    now = datetime.now(UTC)
+    if (
+        _last_pnl_snapshot_at is not None
+        and (now - _last_pnl_snapshot_at).total_seconds() < settings.pnl_snapshot_interval_seconds
+    ):
+        return
+    try:
+        with runtime.session_factory() as session:
+            save_pnl_snapshot(session, daily, total, unrealized, {"realized_pnl": round(realized, 6)})
+        _last_pnl_snapshot_at = now
+    except Exception as exc:
+        logger.warning("pnl_snapshot_persist_failed", error=str(exc))
+
+
 def _record_risk_event(runtime, market_id: str | None, code: str, message: str | None = None) -> None:
     event = {"market_id": market_id, "code": code}
     state.risk_events.append(event)
@@ -453,15 +475,20 @@ async def run_once() -> None:
                     await execution.cancel_all_for_market(market.condition_id)
                     strategy_status[market.condition_id] = "toxic_flow_paused"
                     logger.info("toxic_flow_quotes_pulled", market_id=market.condition_id)
-                elif signal and signal.bid_price and signal.ask_price:
+                elif signal and (signal.bid_price is not None or signal.ask_price is not None):
+                    # One-sided signals are valid: in a downtrend the strategy
+                    # withdraws the bid but keeps quoting the ask so inventory
+                    # can still exit.
                     quotes: list[_QuoteSpec] = []
                     position = inventory.get_position(market.condition_id)
-                    buy_size = _buy_quote_size(settings, position, signal.size)
-                    if buy_size > 0 and inventory.can_quote_side(market.condition_id, Side.BUY):
-                        quotes.append(_QuoteSpec(Side.BUY, signal.bid_price, buy_size, market.yes_token_id))
-                    sell_size = _sell_quote_size(settings, position, signal.size)
-                    if sell_size > 0:
-                        quotes.append(_QuoteSpec(Side.SELL, signal.ask_price, sell_size, market.yes_token_id))
+                    if signal.bid_price is not None:
+                        buy_size = _buy_quote_size(settings, position, signal.size)
+                        if buy_size > 0 and inventory.can_quote_side(market.condition_id, Side.BUY):
+                            quotes.append(_QuoteSpec(Side.BUY, signal.bid_price, buy_size, market.yes_token_id))
+                    if signal.ask_price is not None:
+                        sell_size = _sell_quote_size(settings, position, signal.size)
+                        if sell_size > 0:
+                            quotes.append(_QuoteSpec(Side.SELL, signal.ask_price, sell_size, market.yes_token_id))
                     await _sync_market_quotes(execution, market.condition_id, quotes)
                     logger.info("strategy_signal", **signal.model_dump())
                 # Fills are only ever simulated in paper mode.
@@ -503,8 +530,24 @@ async def run_once() -> None:
         state.daily_pnl = daily_pnl
         state.daily_pnl_reset_at = pnl_tracking.get("reset_at")
         risk.update_daily_pnl(state.daily_pnl)
+        _persist_pnl_snapshot(
+            runtime,
+            settings,
+            daily=state.daily_pnl,
+            total=state.total_pnl,
+            unrealized=state.unrealized_pnl,
+            realized=state.realized_pnl,
+        )
         state.mode_warning = settings.mode_warning
         state.recent_fills = list(getattr(execution, "recent_fills", []))[-50:]
+        if not state.recent_fills and runtime.session_factory is not None:
+            # Fresh process (deploy/restart): the in-memory feed is empty, but
+            # fills are durable now — rehydrate the dashboard feed from the DB.
+            try:
+                with runtime.session_factory() as session:
+                    state.recent_fills = list(reversed(load_recent_fills(session, limit=50)))
+            except Exception as exc:
+                logger.warning("recent_fills_load_failed", error=str(exc))
         save_status_snapshot(
             {
                 "bot_status": state.bot_status,

@@ -181,3 +181,29 @@ async def test_cancel_all_open_orders(settings):
     await execution.create_order("m2", Side.SELL, 0.6, 10, "yes-token")
     await execution.cancel_all_open_orders()
     assert all(order.status.value == "canceled" for order in execution.orders.values())
+
+
+async def test_paper_fill_persists_trade_row(settings, book, tmp_path):
+    from polymarket_mm_bot.config import Settings
+    from polymarket_mm_bot.database.orm import Base, TradeRow
+    from polymarket_mm_bot.database.session import get_engine, get_session_factory
+
+    db_settings = Settings(database_url=f"sqlite:///{tmp_path / 'fills.db'}")
+    Base.metadata.create_all(get_engine(db_settings))
+    factory = get_session_factory(db_settings)
+
+    inventory = InventoryManager(settings)
+    execution = PaperExecutionEngine(
+        settings, inventory, RiskEngine(settings, inventory), session_factory=factory
+    )
+    await execution.create_order("m1", Side.BUY, 0.53, 10, "yes-token")
+    fills = await execution.simulate_fills(book)
+    assert len(fills) == 1
+
+    with factory() as session:
+        rows = session.query(TradeRow).all()
+    assert len(rows) == 1
+    assert rows[0].market_id == "m1"
+    assert rows[0].side == "buy"
+    assert rows[0].size == 10
+    assert rows[0].price == 0.53

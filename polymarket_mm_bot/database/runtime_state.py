@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from datetime import UTC, datetime
 
 from sqlalchemy.orm import Session
 
-from polymarket_mm_bot.database.orm import BotOrderRow, PositionRow, RiskEventRow
+from polymarket_mm_bot.database.orm import BotOrderRow, PnlSnapshotRow, PositionRow, RiskEventRow, TradeRow
 from polymarket_mm_bot.models import BotOrder, OrderStatus, Position
 
 
@@ -100,6 +101,56 @@ def save_positions(session: Session, positions: Iterable[Position]) -> None:
         row.realized_pnl = position.realized_pnl
         row.avg_yes_price = position.avg_yes_price
         row.avg_no_price = position.avg_no_price
+    session.commit()
+
+
+def save_fill(session: Session, order: BotOrder, fill_size: float, fill_price: float) -> None:
+    """Record one executed fill in the trades table (durable trade history)."""
+    session.add(
+        TradeRow(
+            market_id=order.market_id,
+            token_id=order.token_id,
+            price=fill_price,
+            size=fill_size,
+            side=order.side.value,
+            timestamp=datetime.now(UTC),
+        )
+    )
+    session.commit()
+
+
+def load_recent_fills(session: Session, limit: int = 50) -> list[dict]:
+    rows = session.query(TradeRow).order_by(TradeRow.timestamp.desc()).limit(limit).all()
+    return [
+        {
+            "market_id": row.market_id,
+            "token_id": row.token_id,
+            "price": row.price,
+            "size": row.size,
+            "value": round(row.size * row.price, 6),
+            "side": row.side,
+            "at": row.timestamp.isoformat() if row.timestamp else None,
+        }
+        for row in rows
+    ]
+
+
+def save_pnl_snapshot(
+    session: Session,
+    daily_pnl: float,
+    total_pnl: float,
+    unrealized_pnl: float,
+    metadata: dict | None = None,
+) -> None:
+    session.add(
+        PnlSnapshotRow(
+            timestamp=datetime.now(UTC),
+            daily_pnl=daily_pnl,
+            total_pnl=total_pnl,
+            unrealized_pnl=unrealized_pnl,
+            metadata_json=metadata or {},
+        )
+    )
     session.commit()
 
 

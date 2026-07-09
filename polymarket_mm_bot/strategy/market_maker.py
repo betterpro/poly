@@ -10,6 +10,7 @@ from polymarket_mm_bot.utils import clamp, round_to_tick
 REASON_PASSIVE = "passive_spread_capture"
 REASON_TOXIC_WIDEN = "toxic_flow_widen"
 REASON_TOXIC_PULL = "toxic_flow_pull"
+REASON_DOWNTREND_EXIT = "downtrend_exit_only"
 
 
 class FlowToxicity(BaseModel):
@@ -54,14 +55,22 @@ class MarketMakingStrategy:
             return None
         midpoint = (order_book.best_bid + order_book.best_ask) / 2
         total_depth = order_book.bid_depth + order_book.ask_depth
-        imbalance = 0.5 if total_depth <= 0 else order_book.bid_depth / total_depth
-        imbalance_adjustment = (imbalance - 0.5) * self.settings.min_tick
+        # Microprice: weight each side by the opposite depth, so a heavy bid
+        # book pulls fair value toward the ask (buy pressure) and vice versa.
+        # Bounded between best bid and ask by construction; strictly more
+        # informative than a fixed one-tick imbalance nudge on the midpoint.
+        if total_depth > 0:
+            fair = (
+                order_book.best_bid * order_book.ask_depth + order_book.best_ask * order_book.bid_depth
+            ) / total_depth
+        else:
+            fair = midpoint
         trade_adjustment = 0.0
         recent = self._recent_token_trades(order_book, trades)[-10:]
         if recent:
             raw_adjustment = (sum(trade.price for trade in recent) / len(recent) - midpoint) * 0.25
             trade_adjustment = clamp(raw_adjustment, -self.settings.min_tick, self.settings.min_tick)
-        return clamp(midpoint + imbalance_adjustment + trade_adjustment, 0.01, 0.99)
+        return clamp(fair + trade_adjustment, 0.01, 0.99)
 
     def assess_flow_toxicity(
         self,
@@ -156,9 +165,41 @@ class MarketMakingStrategy:
             size = max(size * self.settings.toxicity_size_multiplier, 1.0)
             reason = REASON_TOXIC_WIDEN
 
+        # Mild downtrend (below the pull threshold): stop adding inventory but
+        # keep the sell side alive so existing inventory can exit before the
+        # move deepens. Buying into a falling market is where a passive maker
+        # bleeds the most.
+        downtrend = (
+            self.settings.momentum_buy_pause_ticks > 0
+            and toxicity.momentum_ticks <= -self.settings.momentum_buy_pause_ticks
+        )
+        if downtrend and reason == REASON_PASSIVE:
+            reason = REASON_DOWNTREND_EXIT
+
+        position = self.inventory.get_position(market_id)
         skew = self.inventory.inventory_skew(market_id)
-        bid = fair_price - target_spread / 2 - max(skew, 0) * self.settings.min_tick
-        ask = fair_price + target_spread / 2 - skew * self.settings.min_tick
+        half_spread = target_spread / 2
+        # Inventory pressure scales with the half-spread (not a fixed tick):
+        # the longer we are, the lower we bid and the more attractively we ask,
+        # which unwinds inventory faster and cuts directional risk.
+        skew_shift = skew * half_spread * self.settings.inventory_skew_spread_fraction
+        bid = fair_price - half_spread - max(skew_shift, 0.0)
+        ask = fair_price + half_spread - skew_shift
+
+        # While inventory is comfortable and flow is calm, refuse to rest asks
+        # below break-even: exits in quiet markets should realize a profit.
+        # Under inventory pressure, toxic flow, or a downtrend the floor is
+        # dropped so the position can still be cut at market-driven prices.
+        limit = max(self.settings.max_position_per_market, 1.0)
+        if (
+            self.settings.min_exit_edge_ticks > 0
+            and position.yes_size > 0
+            and position.avg_yes_price > 0
+            and position.yes_size < 0.8 * limit
+            and toxicity.level == "clear"
+            and not downtrend
+        ):
+            ask = max(ask, position.avg_yes_price + self.settings.min_exit_edge_ticks * self.settings.min_tick)
 
         # Stay passive: joining the current best bid/ask is acceptable, but
         # crossing the spread turns the paper bot into a taker and distorts PnL.
@@ -173,7 +214,7 @@ class MarketMakingStrategy:
         return StrategySignal(
             market_id=market_id,
             fair_price=round_to_tick(fair_price, self.settings.min_tick),
-            bid_price=bid,
+            bid_price=None if downtrend else bid,
             ask_price=ask,
             size=size,
             reason=reason,

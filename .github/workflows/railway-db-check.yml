@@ -44,10 +44,12 @@ jobs:
                  pg_size_pretty(pg_total_relation_size(relid)) AS total_size
           FROM pg_stat_user_tables
           ORDER BY n_live_tup DESC;
-          \echo '=== Most recent PnL snapshot ==='
-          SELECT max(timestamp) AS latest_pnl_snapshot FROM pnl_snapshots;
-          \echo '=== Most recent trade ==='
-          SELECT max(timestamp) AS latest_trade FROM trades;
+          \echo '=== Most recent PnL snapshots ==='
+          SELECT timestamp, daily_pnl, total_pnl, unrealized_pnl
+          FROM pnl_snapshots ORDER BY timestamp DESC LIMIT 5;
+          \echo '=== Most recent trades (bot fills) ==='
+          SELECT timestamp, market_id, side, price, size
+          FROM trades ORDER BY timestamp DESC LIMIT 10;
           SQL
 
       - name: Show recent fills and PnL from status snapshot
