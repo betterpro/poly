@@ -826,7 +826,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     }
 
     refreshOverview();
-    setInterval(refreshOverview, 5000);
+    setInterval(refreshOverview, 10000);
   </script>
 </body>
 </html>"""

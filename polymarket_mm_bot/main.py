@@ -41,6 +41,31 @@ def _mark_price(market: Market, book: OrderBook | None) -> float | None:
     return _yes_price_from_market(market)
 
 
+def _slim_market_payload(market: Market) -> dict:
+    """A compact market dict for the dashboard snapshot.
+
+    Deliberately excludes the raw Gamma metadata/event blob (kept in memory for
+    scanning) so the persisted status snapshot stays small — the snapshot is read
+    by the dashboard poller constantly, and shipping full metadata was driving
+    hundreds of GB of DB egress.
+    """
+    raw_prices = market.metadata.get("outcomePrices") if isinstance(market.metadata, dict) else None
+    return {
+        "condition_id": market.condition_id,
+        "question": market.question,
+        "slug": market.slug,
+        "category": market.category,
+        "active": market.active,
+        "closed": market.closed,
+        "paused": market.paused,
+        "volume": market.volume,
+        "liquidity": market.liquidity,
+        "end_date": market.end_date.isoformat() if market.end_date else None,
+        "yes_token_id": market.yes_token_id,
+        "metadata": {"outcomePrices": raw_prices} if raw_prices is not None else {},
+    }
+
+
 def _order_payload(order: BotOrder) -> dict:
     payload = order.model_dump(mode="json")
     payload["remaining_size"] = round(order.remaining_size, 6)
@@ -82,7 +107,7 @@ def _market_card_payload(market: Market, orders: list, order_size: float) -> dic
     yes_price = _yes_price_from_market(market)
     buy_price = buy_order.price if buy_order else yes_price
     sell_price = sell_order.price if sell_order else yes_price
-    payload = market.model_dump(mode="json")
+    payload = _slim_market_payload(market)
     payload.update(
         {
             "bot_buy_price": buy_order.price if buy_order else None,
@@ -195,8 +220,8 @@ async def run_once() -> None:
                     "mode_warning": settings.mode_warning,
                     "allowed_categories": settings.allowed_categories,
                     "updated_at": datetime.now(UTC).isoformat(),
-                    "active_markets": [m.model_dump(mode="json") for m in state.active_markets],
-                    "selected_markets": [m.model_dump(mode="json") for m in state.selected_markets],
+                    "active_markets": [_slim_market_payload(m) for m in state.active_markets],
+                    "selected_markets": [_slim_market_payload(m) for m in state.selected_markets],
                     "orders": [o.model_dump(mode="json") for o in state.orders],
                     "positions": [p.model_dump(mode="json") for p in state.positions],
                     "daily_pnl": state.daily_pnl,
@@ -325,7 +350,7 @@ async def run_once() -> None:
                 "mode_warning": state.mode_warning,
                 "allowed_categories": settings.allowed_categories,
                 "updated_at": datetime.now(UTC).isoformat(),
-                "active_markets": [m.model_dump(mode="json") for m in state.active_markets],
+                "active_markets": [_slim_market_payload(m) for m in state.active_markets],
                 "selected_markets": [
                     _market_card_payload(m, state.orders, settings.order_size) for m in state.selected_markets
                 ],

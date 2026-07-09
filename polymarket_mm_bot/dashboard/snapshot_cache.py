@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import threading
 import time
 from typing import Any
@@ -10,7 +11,19 @@ from polymarket_mm_bot.dashboard.status_store import load_status_snapshot
 
 logger = structlog.get_logger()
 
-REFRESH_SECONDS = 3.0
+
+def _refresh_seconds() -> float:
+    # The poller reads the whole status snapshot from the DB on every tick, so a
+    # short interval is the dominant source of DB egress. Default to 15s (the bot
+    # only writes every ~10s anyway); override with DASHBOARD_POLL_SECONDS.
+    try:
+        value = float(os.environ.get("DASHBOARD_POLL_SECONDS", "15"))
+    except ValueError:
+        value = 15.0
+    return max(value, 5.0)
+
+
+REFRESH_SECONDS = _refresh_seconds()
 _cache: dict[str, Any] = {}
 _loaded_at: float = 0.0
 _lock = threading.Lock()
