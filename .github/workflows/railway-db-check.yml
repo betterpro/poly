@@ -2,6 +2,9 @@ name: Railway DB Check
 
 on:
   workflow_dispatch:
+  push:
+    branches: [claude/railway-db-check-5jc8q8]
+    paths: [".github/workflows/railway-db-check.yml"]
 
 jobs:
   check:
