@@ -1,0 +1,59 @@
+name: Railway DB Check
+
+on:
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    env:
+      RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+    steps:
+      - name: Install Railway CLI
+        run: npm install -g @railway/cli
+
+      - name: Fetch database URL from Railway
+        run: |
+          railway variables --service Postgres --json > /tmp/pg_vars.json
+          DB_URL=$(jq -r '.DATABASE_PUBLIC_URL // .DATABASE_URL' /tmp/pg_vars.json)
+          PG_PASSWORD=$(jq -r '.PGPASSWORD // empty' /tmp/pg_vars.json)
+          echo "::add-mask::$DB_URL"
+          if [ -n "$PG_PASSWORD" ]; then echo "::add-mask::$PG_PASSWORD"; fi
+          echo "DB_URL=$DB_URL" >> "$GITHUB_ENV"
+
+      - name: Run database checks
+        run: |
+          psql "$DB_URL" -v ON_ERROR_STOP=1 <<'SQL'
+          \echo '=== Server version ==='
+          SELECT version();
+          \echo '=== Database size ==='
+          SELECT current_database() AS database,
+                 pg_size_pretty(pg_database_size(current_database())) AS size;
+          \echo '=== Connections ==='
+          SELECT count(*) AS total_connections,
+                 count(*) FILTER (WHERE state = 'active') AS active
+          FROM pg_stat_activity;
+          \echo '=== Alembic migration version ==='
+          SELECT * FROM alembic_version;
+          \echo '=== Tables and approximate row counts ==='
+          SELECT relname AS table_name,
+                 n_live_tup AS approx_rows,
+                 pg_size_pretty(pg_total_relation_size(relid)) AS total_size
+          FROM pg_stat_user_tables
+          ORDER BY n_live_tup DESC;
+          \echo '=== Most recent PnL snapshot ==='
+          SELECT max(timestamp) AS latest_pnl_snapshot FROM pnl_snapshots;
+          \echo '=== Most recent trade ==='
+          SELECT max(timestamp) AS latest_trade FROM trades;
+          SQL
+
+      - name: Check dashboard health endpoint
+        if: always()
+        run: |
+          DOMAIN=$(railway variables --service dashboard --json | jq -r '.RAILWAY_PUBLIC_DOMAIN // empty')
+          if [ -n "$DOMAIN" ]; then
+            echo "Dashboard domain: $DOMAIN"
+            curl -sS -m 30 "https://$DOMAIN/health" | jq .
+          else
+            echo "No public domain configured for dashboard service."
+          fi
