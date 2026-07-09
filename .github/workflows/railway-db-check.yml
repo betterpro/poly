@@ -50,6 +50,32 @@ jobs:
           SELECT max(timestamp) AS latest_trade FROM trades;
           SQL
 
+      - name: Show recent fills and PnL from status snapshot
+        run: |
+          psql "$DB_URL" -v ON_ERROR_STOP=1 <<'SQL'
+          \echo '=== Snapshot status / PnL ==='
+          SELECT status_json->>'updated_at' AS updated_at,
+                 status_json->>'bot_status' AS bot_status,
+                 status_json->>'realized_pnl' AS realized_pnl,
+                 status_json->>'unrealized_pnl' AS unrealized_pnl,
+                 status_json->>'total_pnl' AS total_pnl,
+                 status_json->>'daily_pnl' AS daily_pnl
+          FROM bot_config WHERE id = 1;
+          \echo '=== Last 10 fills (newest first) ==='
+          SELECT jsonb_pretty(COALESCE(jsonb_agg(elem ORDER BY ord DESC), '[]'::jsonb))
+          FROM (
+            SELECT elem, ord
+            FROM bot_config,
+                 jsonb_array_elements((status_json::jsonb)->'recent_fills') WITH ORDINALITY AS t(elem, ord)
+            WHERE id = 1
+            ORDER BY ord DESC
+            LIMIT 10
+          ) s;
+          \echo '=== Positions in snapshot ==='
+          SELECT jsonb_pretty(COALESCE((status_json::jsonb)->'positions', '[]'::jsonb))
+          FROM bot_config WHERE id = 1;
+          SQL
+
       - name: Check dashboard health endpoint
         if: always()
         run: |
