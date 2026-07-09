@@ -61,6 +61,10 @@ class Settings(BaseSettings):
     order_size: float = 10.0
     stale_order_seconds: int = 30
     stale_data_seconds: int = 15
+    # In a wide book, step this many ticks inside the touch to win queue priority
+    # (more fills) while still keeping at least target_spread of edge. 0 disables
+    # (quote exactly at the touch). Never crosses the spread.
+    quote_improve_ticks: int = 1
 
     # Adverse-selection (toxic flow) protection. When recent taker flow is
     # heavily one-sided or price is trending fast, informed traders are likely

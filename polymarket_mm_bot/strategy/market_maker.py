@@ -164,10 +164,22 @@ class MarketMakingStrategy:
         # crossing the spread turns the paper bot into a taker and distorts PnL.
         bid = min(bid, order_book.best_bid)
         ask = max(ask, order_book.best_ask)
+
+        # In a wide book, sitting exactly at the touch means the back of the queue.
+        # Step one (or more) ticks inside to win priority and fill more often, but
+        # only while we still keep at least target_spread of edge and never cross.
+        improve = max(self.settings.quote_improve_ticks, 0) * self.settings.min_tick
+        if improve > 0:
+            edge_floor = max(self.settings.target_spread, self.settings.min_spread)
+            book_spread = order_book.best_ask - order_book.best_bid
+            if book_spread - 2 * improve >= edge_floor - 1e-9:
+                bid = min(bid + improve, fair_price - self.settings.min_tick)
+                ask = max(ask - improve, fair_price + self.settings.min_tick)
+
         bid = round_to_tick(clamp(bid, 0.01, 0.99), self.settings.min_tick)
         ask = round_to_tick(clamp(ask, 0.01, 0.99), self.settings.min_tick)
 
-        if bid >= ask:
+        if bid >= ask or (ask - bid) < self.settings.min_spread - 1e-9:
             return None
 
         return StrategySignal(

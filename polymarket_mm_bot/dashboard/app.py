@@ -304,9 +304,12 @@ def create_app() -> FastAPI:
 
     @app.get("/markets")
     async def markets():
+        # The full active-markets list is no longer persisted (it was unused by the
+        # UI and dominated DB egress); fall back to the quoted markets, which are.
         snapshot = _status()
         allowed = snapshot.get("allowed_categories") or settings.allowed_categories
-        return _filter_markets(snapshot.get("active_markets", []), allowed)
+        rows = snapshot.get("active_markets") or snapshot.get("selected_markets", [])
+        return _filter_markets(rows, allowed)
 
     @app.get("/selected-markets")
     async def selected_markets():

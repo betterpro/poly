@@ -367,7 +367,7 @@ async def run_once() -> None:
                     "mode_warning": settings.mode_warning,
                     "allowed_categories": settings.allowed_categories,
                     "updated_at": datetime.now(UTC).isoformat(),
-                    "active_markets": [_slim_market_payload(m) for m in state.active_markets],
+                    "active_markets_count": len(state.active_markets),
                     "selected_markets": [_slim_market_payload(m) for m in state.selected_markets],
                     "orders": [o.model_dump(mode="json") for o in state.orders],
                     "positions": [p.model_dump(mode="json") for p in state.positions],
@@ -512,7 +512,11 @@ async def run_once() -> None:
                 "mode_warning": state.mode_warning,
                 "allowed_categories": settings.allowed_categories,
                 "updated_at": datetime.now(UTC).isoformat(),
-                "active_markets": [_slim_market_payload(m) for m in state.active_markets],
+                # The full active-markets list (up to 200 rows) is not shown in the
+                # dashboard, so persist only its count. Selected markets (the ones
+                # actually quoted) are small and stay. This keeps the snapshot — read
+                # by the poller every cycle — tiny, avoiding large DB egress.
+                "active_markets_count": len(state.active_markets),
                 "selected_markets": [
                     _market_card_payload(m, state.orders, settings.order_size) for m in state.selected_markets
                 ],
