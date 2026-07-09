@@ -91,6 +91,35 @@ own trades and open orders each loop (`LiveExecutionEngine.sync_fills`).
 - Confirm every risk violation cancels open orders for the affected market.
 - Confirm live mode requires manual config changes and credential presence.
 
+## Deploy to Railway
+
+Production runs a PostgreSQL database plus two app services in the same Railway project:
+
+| Service     | Type     | Notes                                                          |
+| ----------- | -------- | -------------------------------------------------------------- |
+| `Postgres`  | Database | Add via + New → Database → PostgreSQL                          |
+| `dashboard` | Web      | `python -m polymarket_mm_bot.dashboard.server`                 |
+| `bot`       | Worker   | `python -m polymarket_mm_bot.main` (migrations via pre-deploy) |
+
+1. Create a Railway project and connect GitHub.
+2. Add **PostgreSQL** (+ New → Database → PostgreSQL). Keep the default service name `Postgres`.
+3. Add services named `dashboard` and `bot`.
+4. Point each app service at its config file (`/deploy/railway/dashboard.railway.toml` and `/deploy/railway/bot.railway.toml`).
+5. Set shared variables from `deploy/railway/production.env.example`. Required:
+   - `DATABASE_URL=${{Postgres.DATABASE_PRIVATE_URL}}` (private network, no Supabase needed)
+   - `DASHBOARD_PASSWORD`
+6. Generate a public domain for `dashboard` only.
+7. Add `RAILWAY_TOKEN` to GitHub secrets for CI deploys (or use Railway's built-in GitHub deploy).
+
+```powershell
+.\scripts\deploy_railway.ps1              # print setup steps
+.\scripts\deploy_railway.ps1 -ImportVars  # import vars (after railway link)
+.\scripts\deploy_railway.ps1 -Deploy      # deploy both services
+python deploy/set_github_secrets.py         # push RAILWAY_TOKEN to GitHub
+```
+
+Pushes to `master` trigger `.github/workflows/deploy-railway.yml`.
+
 ## Notes
 
 The data client uses public Polymarket Gamma and CLOB read endpoints for discovery and order books. Official docs currently describe authenticated trading through the newer `py_clob_client_v2` SDK with L1 private-key signing and L2 API credentials.

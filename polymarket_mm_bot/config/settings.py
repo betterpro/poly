@@ -27,6 +27,8 @@ class Settings(BaseSettings):
 
     polymarket_host: str = "https://clob.polymarket.com"
     polymarket_gamma_host: str = "https://gamma-api.polymarket.com"
+    # Public trade prints (no auth). The CLOB /trades endpoint requires L2 auth.
+    polymarket_data_host: str = "https://data-api.polymarket.com"
     polymarket_ws_url: str = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
     polymarket_api_key: str | None = None
     polymarket_api_secret: str | None = None
@@ -59,6 +61,17 @@ class Settings(BaseSettings):
     order_size: float = 10.0
     stale_order_seconds: int = 30
     stale_data_seconds: int = 15
+
+    # Adverse-selection (toxic flow) protection. When recent taker flow is
+    # heavily one-sided or price is trending fast, informed traders are likely
+    # active: widen quotes first, then pull them entirely.
+    toxicity_window_seconds: int = 90
+    toxicity_min_trades: int = 3
+    toxicity_widen_threshold: float = 0.60
+    toxicity_pull_threshold: float = 0.85
+    toxicity_momentum_pull_ticks: float = 3.0
+    toxicity_spread_multiplier: float = 2.0
+    toxicity_size_multiplier: float = 0.5
 
     allowed_categories: list[str] = Field(default_factory=lambda: list(DEFAULT_ALLOWED_CATEGORIES))
 

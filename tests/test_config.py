@@ -18,3 +18,9 @@ def test_live_trading_requires_confirmation_and_key():
 def test_sqlite_database_url_is_not_given_postgres_timeout():
     settings = Settings(database_url="sqlite:///runtime.db")
     assert settings.database_url == "sqlite:///runtime.db"
+
+
+def test_postgres_scheme_is_normalized_for_psycopg():
+    settings = Settings(database_url="postgres://user:pass@postgres.railway.internal:5432/railway")
+    assert settings.database_url.startswith("postgresql+psycopg://")
+    assert "connect_timeout=5" in settings.database_url

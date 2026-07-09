@@ -22,7 +22,7 @@ def _fresh_app(tmp_path, monkeypatch, *, password: str | None):
     db = tmp_path / "test.db"
     monkeypatch.setenv("DATABASE_URL", f"sqlite+pysqlite:///{db.as_posix()}")
     if password is None:
-        monkeypatch.delenv("DASHBOARD_PASSWORD", raising=False)
+        monkeypatch.setenv("DASHBOARD_PASSWORD", "")
     else:
         monkeypatch.setenv("DASHBOARD_PASSWORD", password)
     from polymarket_mm_bot.config.settings import get_settings
@@ -99,6 +99,14 @@ def test_api_error_breaker_trips(settings):
     assert decision is not None
     assert decision.allowed is False
     assert decision.code == "api_error_threshold"
+
+
+def test_api_errors_reset(settings):
+    risk = RiskEngine(settings, InventoryManager(settings))
+    for _ in range(settings.max_api_errors):
+        risk.record_api_error()
+    risk.reset_api_errors()
+    assert risk.record_api_error().allowed is True
 
 
 def test_risk_still_blocks_large_order(settings):

@@ -67,7 +67,6 @@ def _poll_loop() -> None:
 
 def start_snapshot_poller() -> None:
     global _poller
-    refresh_snapshot_cache()
     if _poller and _poller.is_alive():
         return
     _stop.clear()

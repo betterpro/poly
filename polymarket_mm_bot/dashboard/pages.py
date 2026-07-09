@@ -24,7 +24,18 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     .stat-value { font-size: 1.35rem; font-weight: 600; overflow-wrap: anywhere; }
     .stat-value.positive { color: #4ade80; }
     .stat-value.negative { color: #f87171; }
+    .positive { color: #4ade80; }
+    .negative { color: #f87171; }
     .stat-value.neutral { color: #e5e7eb; }
+    .pnl-summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 0.75rem; margin-bottom: 1.25rem; }
+    .pnl-card { background: #111827; border: 1px solid #1f2937; border-radius: 12px; padding: 1rem 1.1rem; }
+    .pnl-card.highlight { border-color: #334155; background: linear-gradient(180deg, #0f172a 0%, #111827 100%); }
+    .pnl-card.profit { border-color: #166534; }
+    .pnl-card.loss { border-color: #991b1b; }
+    .pnl-card.credit { border-color: #1e40af; }
+    .pnl-card-label { color: #94a3b8; font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 0.4rem; }
+    .pnl-card-value { font-size: 1.65rem; font-weight: 700; overflow-wrap: anywhere; }
+    .pnl-card-sub { color: #64748b; font-size: 0.76rem; margin-top: 0.35rem; line-height: 1.35; }
     .section { margin-bottom: 1.5rem; }
     .section-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.65rem; }
     .section-head h2 { margin: 0; font-size: 1rem; font-weight: 600; color: #f1f5f9; }
@@ -64,6 +75,10 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     .status-pill.partially_filled { background: #422006; color: #fde68a; }
     form { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 1rem; }
     label { display: flex; flex-direction: column; gap: 0.35rem; font-size: 0.9rem; color: #cbd5e1; }
+    .field { display: flex; flex-direction: column; gap: 0.35rem; }
+    .field-label { font-size: 0.9rem; color: #cbd5e1; }
+    .field-hint { color: #64748b; font-size: 0.78rem; line-height: 1.35; margin: -0.1rem 0 0.15rem; }
+    .checkbox-row { flex-direction: row; align-items: center; gap: 0.5rem; width: fit-content; cursor: pointer; }
     .field-categories { grid-column: 1 / -1; }
     .category-grid { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-top: 0.25rem; }
     .category-option { flex-direction: row; align-items: center; gap: 0.4rem; background: #111827; border: 1px solid #374151; border-radius: 8px; padding: 0.45rem 0.65rem; cursor: pointer; text-transform: capitalize; }
@@ -104,6 +119,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     <section id="overview" class="panel active">
       <p class="hint">Live bot metrics are synced from the worker every loop.</p>
       <div id="overview-content">
+        <div class="pnl-summary" id="pnl-summary"></div>
         <div class="stats" id="stats-row"></div>
         <div class="control-actions">
           <button class="danger" id="stop-trading" type="button">Stop trading</button>
@@ -116,7 +132,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         </div>
         <div class="section">
           <div class="section-head"><h2>Recent trades</h2><span id="trades-count"></span></div>
-          <p class="section-desc">Each row is a fill — a moment the bot actually bought or sold shares. <b class="side-buy">BUY</b> adds to a position, <b class="side-sell">SELL</b> reduces it. Price is per share in cents (0–100¢); a YES share pays $1 if the outcome happens. Value = shares × price.</p>
+          <p class="section-desc">Each row is a fill — a moment the bot actually bought or sold shares. <b class="side-buy">BUY</b> puts credit out (cash spent); <b class="side-sell">SELL</b> brings proceeds back. Price is per share in cents (0–100¢). The cash-flow column shows money in or out on that trade.</p>
           <div id="trades-wrap"></div>
         </div>
         <div class="section">
@@ -161,6 +177,14 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         <button class="primary" id="save-settings" type="button">Save settings</button>
         <span class="message" id="settings-message"></span>
       </div>
+      <div class="section" id="database-section">
+        <div class="section-head"><h2>Database</h2><span>paper reset</span></div>
+        <p class="hint">Clean orders, positions, PnL history, risk events, market cache, and the current dashboard snapshot. Settings are kept and trading is paused.</p>
+        <div class="actions">
+          <button class="danger" id="clean-database" type="button">Clean database</button>
+          <span class="message" id="database-message"></span>
+        </div>
+      </div>
     </section>
   </main>
   <script>
@@ -181,7 +205,43 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       ["stale_order_seconds", "number", "Stale order seconds"],
     ];
 
+    const fieldHints = {
+      paper_trading: "Simulate quotes and fills only. No real Polymarket orders are sent.",
+      run_mode: "Paper uses the simulator; live sends real orders (requires LIVE_TRADING_CONFIRMED and wallet env vars).",
+      max_daily_loss: "Stop trading when today's PnL falls below this loss, in USD. Resets each calendar day.",
+      max_position_per_market: "Maximum shares held on one side (yes or no) in a single market.",
+      max_total_exposure: "Cap on total capital at risk across all open positions, in USD.",
+      max_order_size: "Largest single order the bot may place, in shares.",
+      max_open_orders: "Maximum number of resting orders allowed at once.",
+      max_markets_traded: "How many markets the scanner may select per cycle.",
+      allowed_categories: "Only trade markets in the selected categories.",
+      min_volume: "Markets below this lifetime volume are filtered out.",
+      min_liquidity: "Minimum order-book depth required for a market to qualify.",
+      min_spread: "Minimum bid-ask spread required; also floors how tight quotes can be.",
+      market_score_threshold: "Minimum scanner score (0–100) required to trade a market.",
+      target_spread: "Width between bid and ask around fair value (e.g. 0.02 = 2¢).",
+      order_size: "Default share count per quote the strategy places.",
+      stale_order_seconds: "Cancel resting orders that remain open longer than this many seconds.",
+    };
+
     let categoryOptions = [];
+
+    function apiFetch(url, options = {}) {
+      const path = url.startsWith("/") ? url : `/${url}`;
+      // Avoid fetch() failing when the page was opened via user:pass@host URLs.
+      const target = `${window.location.origin}${path}`;
+      return fetch(target, { credentials: "same-origin", ...options });
+    }
+
+    async function readListJson(res) {
+      const body = await readJsonResponse(res);
+      return res.ok && Array.isArray(body) ? body : [];
+    }
+
+    async function readObjectJson(res, fallback = {}) {
+      const body = await readJsonResponse(res);
+      return res.ok && body && typeof body === "object" && !Array.isArray(body) ? body : fallback;
+    }
 
     function showPanel(name) {
       document.querySelectorAll(".panel").forEach(p => p.classList.remove("active"));
@@ -224,7 +284,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       msg.className = "message";
       msg.textContent = "";
       try {
-        const res = await fetch("/trading/mode");
+        const res = await apiFetch("/trading/mode");
         const body = await readJsonResponse(res);
         if (!res.ok) {
           msg.className = "message error";
@@ -251,7 +311,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       }
       msg.className = "message";
       msg.textContent = "Verifying...";
-      const res = await fetch("/trading/mode/live", {
+      const res = await apiFetch("/trading/mode/live", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ code }),
@@ -272,7 +332,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       const msg = document.getElementById("mode-message");
       msg.className = "message";
       msg.textContent = "Switching...";
-      const res = await fetch("/trading/mode/paper", { method: "POST" });
+      const res = await apiFetch("/trading/mode/paper", { method: "POST" });
       const body = await readJsonResponse(res);
       if (!res.ok) {
         msg.className = "message error";
@@ -295,14 +355,12 @@ DASHBOARD_HTML = """<!DOCTYPE html>
           const wrap = document.createElement("div");
           wrap.className = "field-categories";
           const title = document.createElement("div");
+          title.className = "field-label";
           title.textContent = label;
-          title.style.color = "#cbd5e1";
-          title.style.fontSize = "0.9rem";
           wrap.appendChild(title);
           const hint = document.createElement("div");
-          hint.className = "hint";
-          hint.style.margin = "0.35rem 0 0";
-          hint.textContent = "Only trade markets in the selected categories.";
+          hint.className = "field-hint";
+          hint.textContent = fieldHints[key] || "";
           wrap.appendChild(hint);
           const box = document.createElement("div");
           box.className = "category-grid";
@@ -323,8 +381,19 @@ DASHBOARD_HTML = """<!DOCTYPE html>
           form.appendChild(wrap);
           continue;
         }
-        const wrap = document.createElement("label");
-        wrap.textContent = label;
+        const wrap = document.createElement("div");
+        wrap.className = "field";
+        const title = document.createElement("div");
+        title.className = "field-label";
+        title.textContent = label;
+        wrap.appendChild(title);
+        const hintText = fieldHints[key];
+        if (hintText) {
+          const hint = document.createElement("div");
+          hint.className = "field-hint";
+          hint.textContent = hintText;
+          wrap.appendChild(hint);
+        }
         let input;
         if (type === "checkbox") {
           input = document.createElement("input");
@@ -345,7 +414,15 @@ DASHBOARD_HTML = """<!DOCTYPE html>
           input.value = data[key];
         }
         input.name = key;
-        wrap.appendChild(input);
+        if (type === "checkbox") {
+          const row = document.createElement("label");
+          row.className = "checkbox-row";
+          row.appendChild(input);
+          row.appendChild(document.createTextNode("Enabled"));
+          wrap.appendChild(row);
+        } else {
+          wrap.appendChild(input);
+        }
         form.appendChild(wrap);
       }
     }
@@ -356,8 +433,8 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       const trimmed = text.trimStart();
       if (trimmed.startsWith("<!DOCTYPE") || trimmed.startsWith("<html")) {
         return {
-          detail: "App Platform timeout (" + res.status + "). Database likely unreachable from DigitalOcean. "
-            + "Set DATABASE_URL to Supabase Session pooler URI."
+          detail: "Gateway timeout (" + res.status + "). Database likely unreachable. "
+            + "Set DATABASE_URL to ${{Postgres.DATABASE_PRIVATE_URL}} in Railway."
         };
       }
       try {
@@ -368,7 +445,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     }
 
     async function loadSettingsStatus() {
-      const res = await fetch("/settings/status");
+      const res = await apiFetch("/settings/status");
       const status = await readJsonResponse(res);
       const warn = document.getElementById("db-warning");
       const saveBtn = document.getElementById("save-settings");
@@ -389,8 +466,8 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       msg.textContent = "";
       await loadSettingsStatus();
       const [settingsRes, categoriesRes] = await Promise.all([
-        fetch("/settings"),
-        fetch("/settings/categories"),
+        apiFetch("/settings"),
+        apiFetch("/settings/categories"),
       ]);
       const data = await readJsonResponse(settingsRes);
       const categoriesBody = await readJsonResponse(categoriesRes);
@@ -429,7 +506,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       const msg = document.getElementById("settings-message");
       msg.className = "message";
       msg.textContent = "Saving...";
-      const res = await fetch("/settings", {
+      const res = await apiFetch("/settings", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
@@ -446,6 +523,36 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     }
 
     document.getElementById("save-settings").onclick = saveSettings;
+
+    async function cleanDatabase() {
+      const msg = document.getElementById("database-message");
+      const button = document.getElementById("clean-database");
+      if (!confirm("Clean all paper trading database state? This removes orders, positions, PnL history, fills, risk events, market cache, and pauses trading.")) {
+        return;
+      }
+      msg.className = "message";
+      msg.textContent = "Cleaning...";
+      button.disabled = true;
+      try {
+        const res = await apiFetch("/settings/clean-database", { method: "POST" });
+        const body = await readJsonResponse(res);
+        if (!res.ok) {
+          throw new Error(typeof body.detail === "string" ? body.detail : "Clean failed");
+        }
+        const deleted = body.deleted || {};
+        const count = Object.values(deleted).reduce((sum, value) => sum + (Number(value) || 0), 0);
+        msg.textContent = `Cleaned ${count} rows. Trading paused.`;
+        await refreshOverview();
+        await loadSettingsStatus();
+      } catch (err) {
+        msg.className = "message error";
+        msg.textContent = String(err && err.message || err);
+      } finally {
+        button.disabled = false;
+      }
+    }
+
+    document.getElementById("clean-database").onclick = cleanDatabase;
 
     function escapeHtml(value) {
       return String(value ?? "")
@@ -518,7 +625,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       button.disabled = true;
       if (note) note.textContent = "Resetting…";
       try {
-        const res = await fetch("/pnl/reset-daily", { method: "POST" });
+        const res = await apiFetch("/pnl/reset-daily", { method: "POST" });
         const body = await res.json().catch(() => ({}));
         if (!res.ok) throw new Error(body.detail || "Reset failed");
         if (note) note.textContent = "Reset — waiting for bot sync…";
@@ -561,7 +668,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       if (note) note.textContent = enabled ? "Resuming…" : "Stopping…";
       try {
         const path = enabled ? "/trading/resume" : "/trading/stop";
-        const res = await fetch(path, { method: "POST" });
+        const res = await apiFetch(path, { method: "POST" });
         const body = await res.json().catch(() => ({}));
         if (!res.ok) throw new Error(body.detail || "Request failed");
         if (note) note.textContent = enabled ? "Resumed — waiting for bot sync…" : "Stopped — canceling open orders…";
@@ -576,6 +683,91 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
     document.getElementById("stop-trading").onclick = () => setTradingEnabled(false);
     document.getElementById("resume-trading").onclick = () => setTradingEnabled(true);
+
+    function fmtSignedMoney(n, invertSign) {
+      const v = Number(n) || 0;
+      const signed = invertSign ? -v : v;
+      const sign = signed < 0 ? "−" : signed > 0 ? "+" : "";
+      return sign + fmtMoney(Math.abs(signed));
+    }
+
+    function renderPnlSummary(pnl, health) {
+      const wrap = document.getElementById("pnl-summary");
+      if (!wrap) return;
+      const isPaper = String(health.mode_warning || "").toLowerCase().includes("paper");
+      const realized = Number(pnl.realized_pnl) || 0;
+      const unrealized = Number(pnl.unrealized_pnl) || 0;
+      const total = Number(pnl.total_pnl);
+      const net = Number.isFinite(total) ? total : realized + unrealized;
+      const profit = Number(pnl.profit) || 0;
+      const loss = Number(pnl.loss) || 0;
+      const capital = Number(pnl.capital_deployed) || 0;
+      const positionCredit = Number(pnl.position_credit) || 0;
+      const orderCredit = Number(pnl.open_order_credit) || 0;
+      const bought = Number(pnl.total_bought) || 0;
+      const sold = Number(pnl.total_sold) || 0;
+      const starting = Number(pnl.starting_capital) || 0;
+      const available = Number(pnl.available_credit);
+      const daily = Number(pnl.daily_pnl) || 0;
+      const modeLabel = isPaper ? "paper bankroll" : "starting capital";
+      const cards = [
+        {
+          cls: "highlight",
+          label: "Net P&L",
+          value: fmtMoney(net),
+          valueCls: pnlClass(net),
+          sub: `${fmtMoney(daily)} today · ${isPaper ? "simulated" : "live"}`,
+          tip: "Total profit or loss: realized (closed) plus unrealized (open positions marked to market).",
+        },
+        {
+          cls: "profit",
+          label: "Profit",
+          value: fmtMoney(profit),
+          valueCls: profit > 0 ? "positive" : "neutral",
+          sub: profit > 0 ? `${fmtMoney(Math.max(0, realized))} realized · ${fmtMoney(Math.max(0, unrealized))} unrealized` : "No gains yet",
+          tip: "Sum of all positive PnL — locked-in gains plus open mark-to-market gains.",
+        },
+        {
+          cls: "loss",
+          label: "Loss",
+          value: fmtMoney(loss),
+          valueCls: loss > 0 ? "negative" : "neutral",
+          sub: loss > 0 ? `${fmtMoney(Math.abs(Math.min(0, realized)))} realized · ${fmtMoney(Math.abs(Math.min(0, unrealized)))} unrealized` : "No losses yet",
+          tip: "Sum of all negative PnL — locked-in and open mark-to-market losses.",
+        },
+        {
+          cls: "credit",
+          label: "Credit at work",
+          value: fmtMoney(capital),
+          valueCls: "neutral",
+          sub: `${fmtMoney(positionCredit)} in positions · ${fmtMoney(orderCredit)} in open buys`,
+          tip: "Capital currently deployed: cost of held shares plus cash resting in open buy orders.",
+        },
+        {
+          cls: "",
+          label: "Available credit",
+          value: Number.isFinite(available) ? fmtMoney(available) : "—",
+          valueCls: Number.isFinite(available) ? pnlClass(available - starting) : "neutral",
+          sub: `${fmtMoney(starting)} ${modeLabel}`,
+          tip: "Estimated cash left to deploy: starting capital plus net P&L minus credit currently at work.",
+        },
+        {
+          cls: "",
+          label: "Trade volume",
+          value: fmtMoney(bought + sold),
+          valueCls: "neutral",
+          sub: `${fmtMoney(bought)} bought · ${fmtMoney(sold)} sold`,
+          tip: "Total cash that changed hands in recent fills (rolling feed, not lifetime history).",
+        },
+      ];
+      wrap.innerHTML = cards.map((c) =>
+        `<div class="pnl-card ${escapeHtml(c.cls)}" title="${escapeHtml(c.tip)}">`
+        + `<div class="pnl-card-label">${escapeHtml(c.label)}</div>`
+        + `<div class="pnl-card-value ${escapeHtml(c.valueCls)}">${escapeHtml(c.value)}</div>`
+        + `<div class="pnl-card-sub">${escapeHtml(c.sub)}</div>`
+        + `</div>`
+      ).join("");
+    }
 
     function renderStats(health, pnl, markets, orders, positions, risk, fills) {
       const row = document.getElementById("stats-row");
@@ -675,23 +867,27 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         const sideCls = side === "buy" ? "side-buy" : "side-sell";
         const status = String(f.status || "").toLowerCase();
         const action = `${side.toUpperCase()} ${String(f.outcome || "").toUpperCase()}`.trim();
+        const notional = Number(f.value ?? (Number(f.size) * Number(f.price))) || 0;
+        const cashFlow = side === "buy"
+          ? `<span class="negative">${escapeHtml(fmtSignedMoney(notional, true))}</span><div class="stat-sub">credit out</div>`
+          : `<span class="positive">${escapeHtml(fmtSignedMoney(notional, false))}</span><div class="stat-sub">proceeds</div>`;
         return `<tr>
           <td>${escapeHtml(fmtTime(f.at))}</td>
           <td>${escapeHtml(label)}</td>
           <td class="${sideCls}">${escapeHtml(action)}</td>
           <td class="num">${fmtPct(f.price)}</td>
           <td class="num">${fmtNum(f.size)}</td>
-          <td class="num">${fmtMoney(f.value ?? (Number(f.size) * Number(f.price)))}</td>
+          <td class="num">${cashFlow}</td>
           <td><span class="status-pill ${escapeHtml(status)}">${escapeHtml(status.replaceAll("_", " "))}</span></td>
         </tr>`;
       }).join("");
       wrap.innerHTML = `<table class="data"><thead><tr>
         <th title="When this fill happened">Time</th>
         <th>Market</th>
-        <th title="BUY adds shares, SELL reduces them. YES/NO is which outcome the share is on.">Action</th>
+        <th title="BUY puts credit out, SELL brings proceeds back">Action</th>
         <th title="Price paid per share, in cents (0–100¢)">Price</th>
         <th title="Number of shares that traded in this fill">Shares</th>
-        <th title="Shares × price — the cash that changed hands">Value</th>
+        <th title="Cash spent on buys (−) or received on sells (+)">Cash flow</th>
         <th title="The order's state after this fill">Order</th>
       </tr></thead><tbody>${rows}</tbody></table>`;
     }
@@ -784,45 +980,53 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     }
 
     async function refreshOverview() {
-      const [health, markets, positions, orders, pnl, risk, fills] = await Promise.all([
-        fetch("/health").then(r => r.json()),
-        fetch("/selected-markets").then(r => r.json()),
-        fetch("/positions").then(r => r.json()),
-        fetch("/orders").then(r => r.json()),
-        fetch("/pnl").then(r => r.json()),
-        fetch("/risk-events").then(r => r.json()),
-        fetch("/fills").then(r => r.json()),
-      ]);
-      document.getElementById("mode").innerText = health.mode_warning || health.status;
-      const categories = (health.allowed_categories || []).join(", ");
-      const hint = document.querySelector("#overview .hint");
-      const isPaper = String(health.mode_warning || "").toLowerCase().includes("paper");
-      if (hint) {
-        let text = isPaper
-          ? "Paper trading — simulated quotes and fills only. No real Polymarket orders."
-          : "Live bot metrics are synced from the worker every loop.";
-        text += " PnL includes unrealized mark-to-market on open positions.";
-        if (categories) text += " Categories: " + categories + ".";
-        if (health.updated_at) {
-          const when = new Date(health.updated_at);
-          if (!Number.isNaN(when.getTime())) {
-            text += " Last bot sync: " + when.toLocaleTimeString() + ".";
+      try {
+        const healthRes = await apiFetch("/health");
+        const health = await readObjectJson(healthRes, {});
+        document.getElementById("mode").innerText = health.mode_warning || health.status || "Unknown";
+        const categories = (health.allowed_categories || []).join(", ");
+        const hint = document.querySelector("#overview .hint");
+        const isPaper = String(health.mode_warning || "").toLowerCase().includes("paper");
+        if (hint) {
+          let text = isPaper
+            ? "Paper trading — simulated quotes and fills only. No real Polymarket orders."
+            : "Live bot metrics are synced from the worker every loop.";
+          text += " PnL includes unrealized mark-to-market on open positions.";
+          if (categories) text += " Categories: " + categories + ".";
+          if (health.updated_at) {
+            const when = new Date(health.updated_at);
+            if (!Number.isNaN(when.getTime())) {
+              text += " Last bot sync: " + when.toLocaleTimeString() + ".";
+            }
           }
+          if (health.snapshot_age_seconds != null && health.snapshot_age_seconds > 45) {
+            text += " Dashboard cache is stale — check bot is running.";
+          }
+          hint.textContent = text;
         }
-        if (health.snapshot_age_seconds != null && health.snapshot_age_seconds > 45) {
-          text += " Dashboard cache is stale — check bot is running.";
-        }
-        hint.textContent = text;
+
+        const [markets, positions, orders, pnl, risk, fills] = await Promise.all([
+          apiFetch("/selected-markets").then(readListJson),
+          apiFetch("/positions").then(readListJson),
+          apiFetch("/orders").then(readListJson),
+          apiFetch("/pnl").then((res) => readObjectJson(res)),
+          apiFetch("/risk-events").then(readListJson),
+          apiFetch("/fills").then(readListJson),
+        ]);
+        const marketsById = marketLookup(markets);
+        renderPnlSummary(pnl, health);
+        renderStats(health, pnl, markets, orders, positions, risk, fills);
+        updateTradingControls(health);
+        updatePnlResetNote(pnl);
+        renderTrades(fills, marketsById);
+        renderMarkets(markets);
+        renderOrders(orders, marketsById);
+        renderPositions(positions, marketsById);
+        renderRiskEvents(risk);
+      } catch (err) {
+        console.error("refreshOverview failed", err);
+        document.getElementById("mode").innerText = "Load error";
       }
-      const marketsById = marketLookup(markets);
-      renderStats(health, pnl, markets, orders, positions, risk, fills);
-      updateTradingControls(health);
-      updatePnlResetNote(pnl);
-      renderTrades(fills, marketsById);
-      renderMarkets(markets);
-      renderOrders(orders, marketsById);
-      renderPositions(positions, marketsById);
-      renderRiskEvents(risk);
     }
 
     refreshOverview();

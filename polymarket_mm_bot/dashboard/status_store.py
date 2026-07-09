@@ -4,8 +4,12 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
+import structlog
+
 from polymarket_mm_bot.database.orm import BotConfigRow
 from polymarket_mm_bot.database.session import get_session_factory
+
+logger = structlog.get_logger()
 
 
 def _get_row(session: Session) -> BotConfigRow:
@@ -38,4 +42,8 @@ def save_status_snapshot(payload: dict[str, Any], session: Session | None = None
 def _save_status(payload: dict[str, Any], session: Session) -> None:
     row = _get_row(session)
     row.status_json = payload
-    session.commit()
+    try:
+        session.commit()
+    except Exception as exc:
+        session.rollback()
+        logger.warning("status_snapshot_save_failed", error=str(exc))

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
 import structlog
 from sqlalchemy.orm import Session, sessionmaker
@@ -10,10 +10,13 @@ from sqlalchemy.orm import Session, sessionmaker
 from polymarket_mm_bot.config import Settings
 from polymarket_mm_bot.database.runtime_state import save_order, save_position
 from polymarket_mm_bot.inventory import InventoryManager
-from polymarket_mm_bot.models import BotOrder, OrderBook, OrderStatus, Outcome, Side
+from polymarket_mm_bot.models import BotOrder, OrderBook, OrderStatus, Outcome, Side, Trade
 from polymarket_mm_bot.risk import RiskEngine
 
 logger = structlog.get_logger()
+
+if TYPE_CHECKING:
+    from polymarket_mm_bot.execution.live_client import ClobGateway
 
 # LiveExecutionEngine now places and reconciles real orders through the CLOB
 # gateway. Live trading still requires PAPER_TRADING=false, LIVE_TRADING_CONFIRMED,
@@ -41,6 +44,30 @@ def record_fill(store: list[dict], order: BotOrder, size: float, price: float) -
     )
     if len(store) > _MAX_RECENT_FILLS:
         del store[: len(store) - _MAX_RECENT_FILLS]
+
+
+def _safe_persist_order(session_factory: sessionmaker[Session] | None, order: BotOrder) -> None:
+    if session_factory is None:
+        return
+    try:
+        with session_factory() as session:
+            save_order(session, order)
+    except Exception as exc:
+        logger.warning("order_persist_failed", client_order_id=order.client_order_id, error=str(exc))
+
+
+def _safe_persist_position(
+    session_factory: sessionmaker[Session] | None,
+    inventory: InventoryManager,
+    market_id: str,
+) -> None:
+    if session_factory is None:
+        return
+    try:
+        with session_factory() as session:
+            save_position(session, inventory.get_position(market_id))
+    except Exception as exc:
+        logger.warning("position_persist_failed", market_id=market_id, error=str(exc))
 
 
 class ExecutionEngine(Protocol):
@@ -72,18 +99,15 @@ class PaperExecutionEngine:
         self.orders: dict[str, BotOrder] = orders or {}
         self.session_factory = session_factory
         self.recent_fills: list[dict] = []
+        # Per-order timestamp watermark so the same market prints are never
+        # counted twice when simulating passive maker fills across cycles.
+        self._maker_cursor: dict[str, datetime] = {}
 
     def _persist_order(self, order: BotOrder) -> None:
-        if self.session_factory is None:
-            return
-        with self.session_factory() as session:
-            save_order(session, order)
+        _safe_persist_order(self.session_factory, order)
 
     def _persist_position(self, market_id: str) -> None:
-        if self.session_factory is None:
-            return
-        with self.session_factory() as session:
-            save_position(session, self.inventory.get_position(market_id))
+        _safe_persist_position(self.session_factory, self.inventory, market_id)
 
     async def create_order(
         self,
@@ -120,6 +144,7 @@ class PaperExecutionEngine:
             return
         order.status = OrderStatus.CANCELED
         order.updated_at = datetime.now(UTC)
+        self._maker_cursor.pop(client_order_id, None)
         self._persist_order(order)
         logger.info("order_canceled", client_order_id=client_order_id, market_id=order.market_id)
 
@@ -139,14 +164,21 @@ class PaperExecutionEngine:
             if order.status == OrderStatus.OPEN and (now - order.created_at).total_seconds() > self.settings.stale_order_seconds:
                 await self.cancel_order(order.client_order_id)
 
-    async def simulate_fills(self, order_book: OrderBook) -> list[BotOrder]:
+    async def simulate_fills(self, order_book: OrderBook, trades: list[Trade] | None = None) -> list[BotOrder]:
         filled: list[BotOrder] = []
         for order in self.orders.values():
             if order.market_id != order_book.market_id or order.status not in {OrderStatus.OPEN, OrderStatus.PARTIALLY_FILLED}:
                 continue
+            volume_cap: float | None = None
             if not self._order_crosses_book(order, order_book):
-                continue
+                # Passive (maker) fill: the quote rests in the book, so it only
+                # fills when real market prints trade at or through its price.
+                volume_cap = self._maker_fill_volume(order, trades)
+                if volume_cap <= 0:
+                    continue
             fill_size = min(order.remaining_size, self._allowed_fill_size(order))
+            if volume_cap is not None:
+                fill_size = min(fill_size, volume_cap)
             if fill_size <= 0:
                 continue
             order.filled_size += fill_size
@@ -164,6 +196,41 @@ class PaperExecutionEngine:
         if order.side == Side.BUY:
             return order_book.best_ask is not None and order.price >= order_book.best_ask
         return order_book.best_bid is not None and order.price <= order_book.best_bid
+
+    def _maker_fill_volume(self, order: BotOrder, trades: list[Trade] | None) -> float:
+        """Volume of real market prints that would have hit our resting quote.
+
+        A resting BUY fills when the market trades at or below our bid; a
+        resting SELL fills when it trades at or above our ask. A per-order
+        watermark ensures each print is only counted once even though the same
+        recent-trades feed is seen on multiple cycles.
+        """
+        if not trades:
+            return 0.0
+        cutoff = self._maker_cursor.get(order.client_order_id, order.created_at)
+        volume = 0.0
+        latest = cutoff
+        for trade in trades:
+            timestamp = trade.timestamp
+            if timestamp.tzinfo is None:
+                timestamp = timestamp.replace(tzinfo=UTC)
+            if timestamp <= cutoff:
+                continue
+            latest = max(latest, timestamp)
+            # Prints on the other outcome token are quoted in that token's
+            # price space (NO = 1 - YES) and must not fill a YES order.
+            if trade.token_id and order.token_id and trade.token_id != order.token_id:
+                continue
+            if order.side == Side.BUY and trade.price <= order.price:
+                # Only seller-initiated prints can hit our resting bid.
+                if trade.side is None or trade.side == Side.SELL:
+                    volume += trade.size
+            elif order.side == Side.SELL and trade.price >= order.price:
+                # Only buyer-initiated prints can lift our resting ask.
+                if trade.side is None or trade.side == Side.BUY:
+                    volume += trade.size
+        self._maker_cursor[order.client_order_id] = latest
+        return volume
 
     def _allowed_fill_size(self, order: BotOrder) -> float:
         position = self.inventory.get_position(order.market_id)
@@ -250,16 +317,10 @@ class LiveExecutionEngine:
         logger.info("live_preflight_ok", balance=balance, allowance=allowance)
 
     def _persist_order(self, order: BotOrder) -> None:
-        if self.session_factory is None:
-            return
-        with self.session_factory() as session:
-            save_order(session, order)
+        _safe_persist_order(self.session_factory, order)
 
     def _persist_position(self, market_id: str) -> None:
-        if self.session_factory is None:
-            return
-        with self.session_factory() as session:
-            save_position(session, self.inventory.get_position(market_id))
+        _safe_persist_position(self.session_factory, self.inventory, market_id)
 
     async def create_order(
         self,

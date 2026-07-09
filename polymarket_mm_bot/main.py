@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from dataclasses import dataclass
 from datetime import UTC, datetime
 
 import structlog
@@ -17,11 +18,21 @@ from polymarket_mm_bot.data import PolymarketDataClient
 from polymarket_mm_bot.logging import configure_logging
 from polymarket_mm_bot.models import BotOrder, Market, OrderBook, OrderStatus, Position, Side
 from polymarket_mm_bot.market_scanner import MarketScanner
-from polymarket_mm_bot.strategy import MarketMakingStrategy
+from polymarket_mm_bot.strategy import REASON_TOXIC_PULL, MarketMakingStrategy
 from polymarket_mm_bot.trading_runtime import get_trading_runtime
-from polymarket_mm_bot.utils import estimate_taker_fee, maker_fee
+from polymarket_mm_bot.utils import clamp, estimate_taker_fee, maker_fee
 
 logger = structlog.get_logger()
+
+_OPEN_ORDER_STATUSES = {OrderStatus.OPEN, OrderStatus.PARTIALLY_FILLED}
+
+
+@dataclass(frozen=True)
+class _QuoteSpec:
+    side: Side
+    price: float
+    size: float
+    token_id: str | None
 
 
 def _yes_price_from_market(market: Market) -> float | None:
@@ -122,6 +133,136 @@ def _market_card_payload(market: Market, orders: list, order_size: float) -> dic
     return payload
 
 
+def _sell_quote_size(settings, position: Position, signal_size: float) -> float:
+    if position.yes_size <= 0:
+        return 0.0
+    limit = max(settings.max_position_per_market, 1.0)
+    if position.yes_size >= limit * 0.8:
+        return min(position.yes_size, settings.max_order_size)
+    return min(signal_size, position.yes_size)
+
+
+def _buy_quote_size(settings, position: Position, signal_size: float) -> float:
+    limit = max(settings.max_position_per_market, 1.0)
+    target_inventory = limit * 0.5
+    if position.yes_size >= target_inventory:
+        return 0.0
+    return min(signal_size, settings.max_order_size, target_inventory - position.yes_size)
+
+
+def _metadata_float(value) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _metadata_quoteable(settings, market: Market) -> bool:
+    bid = _metadata_float(market.metadata.get("bestBid"))
+    ask = _metadata_float(market.metadata.get("bestAsk"))
+    if bid is None or ask is None:
+        return False
+    return ask - bid >= settings.min_spread and ask > settings.min_tick and bid < 1 - settings.min_tick
+
+
+def _quote_matches(order: BotOrder, market_id: str, quote: _QuoteSpec) -> bool:
+    return (
+        order.market_id == market_id
+        and order.side == quote.side
+        and order.token_id == quote.token_id
+        and order.status in _OPEN_ORDER_STATUSES
+        and abs(order.price - quote.price) <= 1e-9
+        and abs(order.remaining_size - quote.size) <= 1e-9
+    )
+
+
+async def _cancel_unmanaged_stale_orders(execution, settings, managed_market_ids: set[str]) -> None:
+    now = datetime.now(UTC)
+    for order in list(execution.orders.values()):
+        if order.status not in _OPEN_ORDER_STATUSES or order.market_id in managed_market_ids:
+            continue
+        if (now - order.created_at).total_seconds() > settings.stale_order_seconds:
+            await execution.cancel_order(order.client_order_id)
+
+
+async def _sync_market_quotes(execution, market_id: str, quotes: list[_QuoteSpec]) -> None:
+    """Keep unchanged quotes resting and replace only stale or disabled sides."""
+    desired = [quote for quote in quotes if quote.size > 0]
+    kept_ids: set[str] = set()
+    for quote in desired:
+        match = next(
+            (
+                order
+                for order in execution.orders.values()
+                if order.client_order_id not in kept_ids and _quote_matches(order, market_id, quote)
+            ),
+            None,
+        )
+        if match is not None:
+            kept_ids.add(match.client_order_id)
+
+    for order in list(execution.orders.values()):
+        if (
+            order.market_id == market_id
+            and order.status in _OPEN_ORDER_STATUSES
+            and order.client_order_id not in kept_ids
+        ):
+            await execution.cancel_order(order.client_order_id)
+
+    kept_sides = {order.side for order in execution.orders.values() if order.client_order_id in kept_ids}
+    for quote in desired:
+        if quote.side in kept_sides:
+            continue
+        order = await execution.create_order(market_id, quote.side, quote.price, quote.size, quote.token_id)
+        if order.status in _OPEN_ORDER_STATUSES:
+            kept_sides.add(order.side)
+
+
+async def _unwind_orphaned_positions(
+    settings,
+    inventory,
+    execution,
+    markets: list[Market],
+    selected: list[Market],
+    books: dict[str, OrderBook],
+    trades: dict[str, list],
+) -> None:
+    """Quote exits for inventory held in markets the scanner no longer selects.
+
+    Without this, a position acquired in a market that later drops out of the
+    selection set would never be quoted on the sell side and stay stuck forever.
+    """
+    selected_ids = {market.condition_id for market in selected}
+    market_lookup = {market.condition_id: market for market in markets}
+    for position in list(inventory.positions.values()):
+        if position.yes_size <= 0 or position.market_id in selected_ids:
+            continue
+        market = market_lookup.get(position.market_id)
+        book = books.get(position.market_id)
+        if market is None or not market.yes_token_id or book is None:
+            continue
+        if book.best_bid is None or book.best_ask is None:
+            continue
+        has_open_sell = any(
+            order.market_id == position.market_id
+            and order.side == Side.SELL
+            and order.status in {OrderStatus.OPEN, OrderStatus.PARTIALLY_FILLED}
+            for order in execution.orders.values()
+        )
+        if has_open_sell:
+            continue
+        # Quote one tick inside the ask when possible, otherwise cross to the
+        # bid so the position actually exits. Sub-penny books (longshots) are
+        # allowed here: Polymarket supports 0.001 ticks at the extremes, and
+        # clamping to 0.01 would leave the exit resting above the entire book.
+        ask = round(clamp(max(book.best_ask - settings.min_tick, book.best_bid), 0.001, 0.999), 3)
+        size = min(position.yes_size, settings.max_order_size)
+        await execution.create_order(position.market_id, Side.SELL, ask, size, market.yes_token_id)
+        logger.info("unwind_quote_placed", market_id=position.market_id, price=ask, size=size)
+        if settings.paper_trading:
+            await execution.simulate_fills(book, trades.get(position.market_id, []))
+
+
 def _record_risk_event(runtime, market_id: str | None, code: str, message: str | None = None) -> None:
     event = {"market_id": market_id, "code": code}
     state.risk_events.append(event)
@@ -136,14 +277,21 @@ def _record_risk_event(runtime, market_id: str | None, code: str, message: str |
 
 async def _load_books_and_trades(
     data: PolymarketDataClient,
+    settings,
     markets: list[Market],
     *,
-    limit: int = 40,
+    limit: int = 80,
     include_market_ids: set[str] | None = None,
 ) -> tuple[dict[str, OrderBook], dict[str, list], int]:
     include_market_ids = include_market_ids or set()
     sorted_markets = sorted(markets, key=lambda market: (market.liquidity, market.volume), reverse=True)
-    candidates_by_id = {market.condition_id: market for market in sorted_markets[:limit]}
+    quoteable_markets = [market for market in sorted_markets if _metadata_quoteable(settings, market)]
+    candidate_pool = [*quoteable_markets, *sorted_markets]
+    candidates_by_id: dict[str, Market] = {}
+    for market in candidate_pool:
+        if len(candidates_by_id) >= limit:
+            break
+        candidates_by_id[market.condition_id] = market
     for market in sorted_markets:
         if market.condition_id in include_market_ids:
             candidates_by_id[market.condition_id] = market
@@ -167,7 +315,6 @@ async def _load_books_and_trades(
             trades[market.condition_id] = await data.fetch_recent_trades(market.condition_id)
         except Exception as exc:
             logger.debug("trades_unavailable", market_id=market.condition_id, error=str(exc))
-            error_count += 1
             trades[market.condition_id] = []
 
     await asyncio.gather(*(load_market_data(market) for market in candidates))
@@ -243,17 +390,22 @@ async def run_once() -> None:
         }
         books, trades, market_data_errors = await _load_books_and_trades(
             data,
+            settings,
             markets,
             include_market_ids=position_market_ids,
         )
         api_blocked = False
-        for _ in range(market_data_errors):
+        api_error_signals = 1 if market_data_errors and not books else 0
+        for _ in range(api_error_signals):
             decision = risk.record_api_error()
             if not decision.allowed:
                 await execution.cancel_all_open_orders()
-                _record_risk_event(runtime, None, decision.code)
+                if risk.api_errors == settings.max_api_errors:
+                    _record_risk_event(runtime, None, decision.code)
                 api_blocked = True
                 break
+        if market_data_errors == 0 or books:
+            risk.reset_api_errors()
 
         selected = scanner.select_markets(markets, books, trades)
         state.selected_markets = selected
@@ -278,6 +430,7 @@ async def run_once() -> None:
             state.bot_status = "risk_paused"
 
         if trading_enabled:
+            strategy_status: dict[str, str] = {market.condition_id: "running" for market in selected}
             for market in selected:
                 book = books.get(market.condition_id)
                 if not book:
@@ -287,36 +440,45 @@ async def run_once() -> None:
                     await execution.cancel_all_for_market(market.condition_id)
                     _record_risk_event(runtime, market.condition_id, decision.code, decision.message)
                     continue
+                # Match resting quotes from the previous cycle against fresh
+                # market prints BEFORE canceling/replacing them. Otherwise
+                # passive orders are torn down every cycle without ever having
+                # a chance to fill on the trades that happened in between.
+                if settings.paper_trading:
+                    await execution.simulate_fills(book, trades.get(market.condition_id, []))
                 signal = strategy.build_signal(market.condition_id, book, trades.get(market.condition_id, []))
-                if signal and signal.bid_price and signal.ask_price:
+                if signal and signal.reason == REASON_TOXIC_PULL:
+                    # Informed flow detected: get out of the way immediately
+                    # instead of waiting for stale-order cleanup.
                     await execution.cancel_all_for_market(market.condition_id)
-                    if inventory.can_quote_side(market.condition_id, Side.BUY):
-                        await execution.create_order(
-                            market.condition_id,
-                            Side.BUY,
-                            signal.bid_price,
-                            signal.size,
-                            market.yes_token_id,
-                        )
+                    strategy_status[market.condition_id] = "toxic_flow_paused"
+                    logger.info("toxic_flow_quotes_pulled", market_id=market.condition_id)
+                elif signal and signal.bid_price and signal.ask_price:
+                    quotes: list[_QuoteSpec] = []
                     position = inventory.get_position(market.condition_id)
-                    sell_size = min(signal.size, position.yes_size)
+                    buy_size = _buy_quote_size(settings, position, signal.size)
+                    if buy_size > 0 and inventory.can_quote_side(market.condition_id, Side.BUY):
+                        quotes.append(_QuoteSpec(Side.BUY, signal.bid_price, buy_size, market.yes_token_id))
+                    sell_size = _sell_quote_size(settings, position, signal.size)
                     if sell_size > 0:
-                        await execution.create_order(
-                            market.condition_id,
-                            Side.SELL,
-                            signal.ask_price,
-                            sell_size,
-                            market.yes_token_id,
-                        )
+                        quotes.append(_QuoteSpec(Side.SELL, signal.ask_price, sell_size, market.yes_token_id))
+                    await _sync_market_quotes(execution, market.condition_id, quotes)
                     logger.info("strategy_signal", **signal.model_dump())
                 # Fills are only ever simulated in paper mode.
                 if settings.paper_trading:
-                    await execution.simulate_fills(book)
-            await execution.cancel_stale_orders()
+                    await execution.simulate_fills(book, trades.get(market.condition_id, []))
+            await _unwind_orphaned_positions(settings, inventory, execution, markets, selected, books, trades)
+            managed_market_ids = {market.condition_id for market in selected}
+            managed_market_ids.update(
+                position.market_id
+                for position in inventory.positions.values()
+                if position.yes_size > 0 or position.no_size > 0
+            )
+            await _cancel_unmanaged_stale_orders(execution, settings, managed_market_ids)
             # In live mode, learn fills by reconciling against the exchange.
             if not settings.paper_trading:
                 await execution.sync_fills()
-            state.strategy_status = {market.condition_id: "running" for market in selected}
+            state.strategy_status = strategy_status
         else:
             await execution.cancel_all_open_orders()
             state.strategy_status = {market.condition_id: "paused" for market in selected}
@@ -377,11 +539,18 @@ async def run_once() -> None:
         await data.close()
 
 
+def _skip_startup_migrations() -> bool:
+    import os
+
+    return os.environ.get("SKIP_STARTUP_MIGRATIONS", "").lower() in {"1", "true", "yes"}
+
+
 async def main() -> None:
-    try:
-        run_migrations()
-    except Exception as exc:
-        logger.warning("bot_migration_failed", error=str(exc))
+    if not _skip_startup_migrations():
+        try:
+            run_migrations()
+        except Exception as exc:
+            logger.warning("bot_migration_failed", error=str(exc))
     while True:
         try:
             await run_once()
