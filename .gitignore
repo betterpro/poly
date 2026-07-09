@@ -11,3 +11,4 @@ venv/
 dist/
 build/
 deploy/app-spec.generated.yaml
+uv.lock
