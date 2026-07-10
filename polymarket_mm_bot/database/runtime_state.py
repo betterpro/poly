@@ -1,11 +1,33 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from datetime import UTC, datetime
 
 from sqlalchemy.orm import Session
 
-from polymarket_mm_bot.database.orm import BotOrderRow, PositionRow, RiskEventRow
+from polymarket_mm_bot.database.orm import BotOrderRow, PnlSnapshotRow, PositionRow, RiskEventRow
 from polymarket_mm_bot.models import BotOrder, OrderStatus, Position
+
+
+def save_pnl_snapshot(
+    session: Session,
+    *,
+    daily_pnl: float,
+    total_pnl: float,
+    unrealized_pnl: float,
+    metadata: dict | None = None,
+) -> None:
+    """Append a point to the pnl_snapshots performance time-series."""
+    session.add(
+        PnlSnapshotRow(
+            timestamp=datetime.now(UTC),
+            daily_pnl=daily_pnl,
+            total_pnl=total_pnl,
+            unrealized_pnl=unrealized_pnl,
+            metadata_json=metadata or {},
+        )
+    )
+    session.commit()
 
 
 def load_orders(session: Session) -> dict[str, BotOrder]:

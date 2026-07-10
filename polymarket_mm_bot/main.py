@@ -13,7 +13,7 @@ from polymarket_mm_bot.dashboard.trading_control import is_trading_enabled
 from polymarket_mm_bot.dashboard.state import state
 from polymarket_mm_bot.dashboard.status_store import save_status_snapshot
 from polymarket_mm_bot.database.migrate import run_migrations
-from polymarket_mm_bot.database.runtime_state import save_risk_event
+from polymarket_mm_bot.database.runtime_state import save_pnl_snapshot, save_risk_event
 from polymarket_mm_bot.data import PolymarketDataClient
 from polymarket_mm_bot.logging import configure_logging
 from polymarket_mm_bot.models import BotOrder, Market, OrderBook, OrderStatus, Position, Side
@@ -25,6 +25,30 @@ from polymarket_mm_bot.utils import clamp, estimate_taker_fee, maker_fee
 logger = structlog.get_logger()
 
 _OPEN_ORDER_STATUSES = {OrderStatus.OPEN, OrderStatus.PARTIALLY_FILLED}
+_last_pnl_snapshot_at: datetime | None = None
+
+
+def _maybe_write_pnl_snapshot(runtime, settings) -> None:
+    """Append a throttled row to the pnl_snapshots performance time-series."""
+    global _last_pnl_snapshot_at
+    interval = getattr(settings, "pnl_snapshot_seconds", 300)
+    if interval <= 0 or runtime.session_factory is None:
+        return
+    now = datetime.now(UTC)
+    if _last_pnl_snapshot_at is not None and (now - _last_pnl_snapshot_at).total_seconds() < interval:
+        return
+    try:
+        with runtime.session_factory() as session:
+            save_pnl_snapshot(
+                session,
+                daily_pnl=state.daily_pnl,
+                total_pnl=state.total_pnl,
+                unrealized_pnl=state.unrealized_pnl,
+                metadata={"bot_status": state.bot_status, "realized_pnl": state.realized_pnl},
+            )
+        _last_pnl_snapshot_at = now
+    except Exception as exc:
+        logger.warning("pnl_snapshot_failed", error=str(exc))
 
 
 @dataclass(frozen=True)
@@ -144,10 +168,16 @@ def _sell_quote_size(settings, position: Position, signal_size: float) -> float:
 
 def _buy_quote_size(settings, position: Position, signal_size: float) -> float:
     limit = max(settings.max_position_per_market, 1.0)
-    target_inventory = limit * 0.5
-    if position.yes_size >= target_inventory:
+    fraction = clamp(getattr(settings, "inventory_target_fraction", 0.35), 0.05, 1.0)
+    target_inventory = limit * fraction
+    remaining = target_inventory - position.yes_size
+    if remaining <= 0:
         return 0.0
-    return min(signal_size, settings.max_order_size, target_inventory - position.yes_size)
+    # Taper: buy full size when flat, shrinking toward zero as inventory fills up,
+    # so the bot can't load a big one-sided position into a single market.
+    fill_fraction = clamp(remaining / target_inventory, 0.0, 1.0)
+    tapered = max(signal_size * fill_fraction, 1.0)
+    return min(tapered, signal_size, settings.max_order_size, remaining)
 
 
 def _metadata_float(value) -> float | None:
@@ -505,6 +535,7 @@ async def run_once() -> None:
         risk.update_daily_pnl(state.daily_pnl)
         state.mode_warning = settings.mode_warning
         state.recent_fills = list(getattr(execution, "recent_fills", []))[-50:]
+        _maybe_write_pnl_snapshot(runtime, settings)
         save_status_snapshot(
             {
                 "bot_status": state.bot_status,

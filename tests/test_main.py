@@ -13,12 +13,17 @@ from polymarket_mm_bot.models import BotOrder, Market, OrderStatus, Position, Si
 
 
 def test_buy_quote_size_tapers_before_inventory_limit(settings):
-    position = Position(market_id="m1", yes_size=(settings.max_position_per_market * 0.5) - 4)
-    assert _buy_quote_size(settings, position, signal_size=10) == 4
+    # Near the inventory target, the buy is tapered and capped to what's left,
+    # so the bot slows down instead of loading a big one-sided position.
+    target = settings.max_position_per_market * settings.inventory_target_fraction
+    position = Position(market_id="m1", yes_size=target - 4)
+    size = _buy_quote_size(settings, position, signal_size=10)
+    assert 0 < size <= 4
 
 
 def test_buy_quote_size_stops_at_target_inventory(settings):
-    position = Position(market_id="m1", yes_size=settings.max_position_per_market * 0.5)
+    target = settings.max_position_per_market * settings.inventory_target_fraction
+    position = Position(market_id="m1", yes_size=target)
     assert _buy_quote_size(settings, position, signal_size=10) == 0
 
 

@@ -65,6 +65,13 @@ class Settings(BaseSettings):
     # (more fills) while still keeping at least target_spread of edge. 0 disables
     # (quote exactly at the touch). Never crosses the spread.
     quote_improve_ticks: int = 1
+    # Inventory control. The bot stops buying a market once it holds this fraction
+    # of max_position_per_market, and tapers buy size as it fills up so it can't
+    # pile a large one-sided (directional) position into a single market.
+    inventory_target_fraction: float = 0.35
+    # How often (seconds) to append a row to pnl_snapshots for the performance
+    # time-series. 0 disables. Kept infrequent to avoid unnecessary DB writes.
+    pnl_snapshot_seconds: int = 300
 
     # Adverse-selection (toxic flow) protection. When recent taker flow is
     # heavily one-sided or price is trending fast, informed traders are likely
