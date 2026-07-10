@@ -430,6 +430,10 @@ def create_app() -> FastAPI:
     async def strategy_status():
         return _status().get("strategy_status", {})
 
+    @app.get("/strategy-profiles")
+    async def strategy_profiles():
+        return _status().get("strategy_profiles", [])
+
     return app
 
 

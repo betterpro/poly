@@ -23,6 +23,7 @@ class DashboardState(BaseModel):
     risk_events: list[dict] = Field(default_factory=list)
     recent_fills: list[dict] = Field(default_factory=list)
     strategy_status: dict[str, str] = Field(default_factory=dict)
+    strategy_profiles: list[dict] = Field(default_factory=list)
 
 
 state = DashboardState()

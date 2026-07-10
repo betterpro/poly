@@ -22,6 +22,30 @@ def test_fills_endpoint_returns_newest_first(monkeypatch):
     assert [f["order_id"] for f in fills] == ["b", "a"]  # newest first
 
 
+def test_strategy_profiles_endpoint_returns_snapshot_profiles(monkeypatch):
+    snapshot = {
+        "strategy_profiles": [
+            {
+                "name": "active",
+                "daily_pnl": 12.5,
+                "target_daily_pnl": 100,
+                "target_progress_pct": 12.5,
+            }
+        ]
+    }
+    monkeypatch.setattr(dashboard_app, "_status", lambda: snapshot)
+    monkeypatch.setenv("DASHBOARD_PASSWORD", "secret")
+    from polymarket_mm_bot.config.settings import get_settings
+
+    get_settings.cache_clear()
+    client = TestClient(dashboard_app.create_app())
+    client.auth = ("admin", "secret")
+
+    profiles = client.get("/strategy-profiles").json()
+    assert profiles[0]["name"] == "active"
+    assert profiles[0]["target_progress_pct"] == 12.5
+
+
 def test_dashboard_normalizes_order_and_position_metrics(monkeypatch):
     snapshot = {
         "orders": [

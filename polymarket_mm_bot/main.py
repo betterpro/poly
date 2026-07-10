@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 
 import structlog
 
@@ -15,9 +15,12 @@ from polymarket_mm_bot.dashboard.status_store import save_status_snapshot
 from polymarket_mm_bot.database.migrate import run_migrations
 from polymarket_mm_bot.database.runtime_state import save_pnl_snapshot, save_risk_event
 from polymarket_mm_bot.data import PolymarketDataClient
+from polymarket_mm_bot.execution import PaperExecutionEngine
+from polymarket_mm_bot.inventory import InventoryManager
 from polymarket_mm_bot.logging import configure_logging
 from polymarket_mm_bot.models import BotOrder, Market, OrderBook, OrderStatus, Position, Side
 from polymarket_mm_bot.market_scanner import MarketScanner
+from polymarket_mm_bot.risk import RiskEngine
 from polymarket_mm_bot.strategy import REASON_TOXIC_PULL, MarketMakingStrategy
 from polymarket_mm_bot.trading_runtime import get_trading_runtime
 from polymarket_mm_bot.utils import clamp, estimate_taker_fee, maker_fee
@@ -25,6 +28,7 @@ from polymarket_mm_bot.utils import clamp, estimate_taker_fee, maker_fee
 logger = structlog.get_logger()
 
 _OPEN_ORDER_STATUSES = {OrderStatus.OPEN, OrderStatus.PARTIALLY_FILLED}
+_PAPER_DAILY_TARGET = 100.0
 _last_pnl_snapshot_at: datetime | None = None
 
 
@@ -57,6 +61,102 @@ class _QuoteSpec:
     price: float
     size: float
     token_id: str | None
+
+
+@dataclass(frozen=True)
+class _StrategyProfileSpec:
+    name: str
+    description: str
+    overrides: dict
+
+
+@dataclass
+class _ShadowProfileState:
+    settings: object
+    inventory: InventoryManager
+    risk: RiskEngine
+    execution: PaperExecutionEngine
+    baseline_date: date | None = None
+    baseline_total_pnl: float = 0.0
+
+
+_SHADOW_PROFILES: dict[str, _ShadowProfileState] = {}
+
+
+def _strategy_profile_specs() -> list[_StrategyProfileSpec]:
+    return [
+        _StrategyProfileSpec(
+            name="growth_100",
+            description="Higher turnover paper profile aimed at the $100/day target with stronger liquidity filters.",
+            overrides={
+                "order_size": 35.0,
+                "max_order_size": 50.0,
+                "max_position_per_market": 120.0,
+                "max_total_exposure": 3000.0,
+                "max_daily_loss": 100.0,
+                "max_markets_traded": 30,
+                "max_open_orders": 300,
+                "min_liquidity": 3000.0,
+                "market_score_threshold": 75.0,
+                "target_spread": 0.025,
+            },
+        ),
+        _StrategyProfileSpec(
+            name="selective_spread",
+            description="Fewer, higher-quality markets with wider quotes for cleaner spread capture.",
+            overrides={
+                "order_size": 25.0,
+                "max_order_size": 40.0,
+                "max_position_per_market": 90.0,
+                "max_total_exposure": 1800.0,
+                "max_daily_loss": 60.0,
+                "max_markets_traded": 12,
+                "max_open_orders": 80,
+                "min_liquidity": 5000.0,
+                "market_score_threshold": 80.0,
+                "target_spread": 0.04,
+            },
+        ),
+        _StrategyProfileSpec(
+            name="fast_recycle",
+            description="Smaller clips across more liquid markets to test repeatable fill frequency.",
+            overrides={
+                "order_size": 18.0,
+                "max_order_size": 30.0,
+                "max_position_per_market": 80.0,
+                "max_total_exposure": 2200.0,
+                "max_daily_loss": 70.0,
+                "max_markets_traded": 35,
+                "max_open_orders": 250,
+                "min_liquidity": 2500.0,
+                "market_score_threshold": 72.0,
+                "target_spread": 0.02,
+            },
+        ),
+    ]
+
+
+def _profile_settings(base_settings, overrides: dict):
+    data = base_settings.model_dump()
+    data.update(overrides)
+    return type(base_settings).model_validate(data)
+
+
+def _shadow_state(base_settings, spec: _StrategyProfileSpec) -> _ShadowProfileState:
+    profile_settings = _profile_settings(base_settings, spec.overrides)
+    existing = _SHADOW_PROFILES.get(spec.name)
+    if existing is not None:
+        existing.settings = profile_settings
+        existing.inventory.settings = profile_settings
+        existing.risk.settings = profile_settings
+        existing.execution.settings = profile_settings
+        return existing
+    inventory = InventoryManager(profile_settings)
+    risk = RiskEngine(profile_settings, inventory)
+    execution = PaperExecutionEngine(profile_settings, inventory, risk)
+    profile = _ShadowProfileState(profile_settings, inventory, risk, execution)
+    _SHADOW_PROFILES[spec.name] = profile
+    return profile
 
 
 def _yes_price_from_market(market: Market) -> float | None:
@@ -351,6 +451,162 @@ async def _load_books_and_trades(
     return books, trades, error_count
 
 
+def _mark_prices_for_inventory(
+    markets: list[Market],
+    books: dict[str, OrderBook],
+    inventory: InventoryManager,
+) -> dict[str, float]:
+    market_lookup = {market.condition_id: market for market in markets}
+    mark_prices: dict[str, float] = {}
+    for position in inventory.positions.values():
+        if position.yes_size <= 0 and position.no_size <= 0:
+            continue
+        market = market_lookup.get(position.market_id)
+        if market is None:
+            continue
+        mark = _mark_price(market, books.get(position.market_id))
+        if mark is not None:
+            mark_prices[position.market_id] = mark
+    return mark_prices
+
+
+def _open_buy_credit(orders: list[BotOrder]) -> float:
+    return round(
+        sum(order.remaining_size * order.price for order in orders if order.side == Side.BUY),
+        4,
+    )
+
+
+def _active_strategy_profile_payload(settings, orders: list[BotOrder]) -> dict:
+    open_orders = [order for order in orders if order.status in _OPEN_ORDER_STATUSES]
+    return {
+        "name": "active",
+        "description": "Production paper profile currently placing orders.",
+        "active": True,
+        "target_daily_pnl": _PAPER_DAILY_TARGET,
+        "daily_pnl": round(state.daily_pnl, 4),
+        "target_progress_pct": round((state.daily_pnl / _PAPER_DAILY_TARGET) * 100, 2),
+        "total_pnl": round(state.total_pnl, 4),
+        "realized_pnl": round(state.realized_pnl, 4),
+        "unrealized_pnl": round(state.unrealized_pnl, 4),
+        "open_orders": len(open_orders),
+        "open_buy_credit": _open_buy_credit(open_orders),
+        "positions": len(state.positions),
+        "recent_fills": len(state.recent_fills),
+        "settings": {
+            "order_size": settings.order_size,
+            "max_position_per_market": settings.max_position_per_market,
+            "max_total_exposure": settings.max_total_exposure,
+            "max_daily_loss": settings.max_daily_loss,
+            "max_markets_traded": settings.max_markets_traded,
+            "min_liquidity": settings.min_liquidity,
+            "market_score_threshold": settings.market_score_threshold,
+            "target_spread": settings.target_spread,
+        },
+    }
+
+
+def _shadow_strategy_profile_payload(
+    spec: _StrategyProfileSpec,
+    profile: _ShadowProfileState,
+    selected: list[Market],
+    markets: list[Market],
+    books: dict[str, OrderBook],
+) -> dict:
+    mark_prices = _mark_prices_for_inventory(markets, books, profile.inventory)
+    realized, unrealized, total = profile.inventory.portfolio_pnl(mark_prices)
+    today = datetime.now(UTC).date()
+    if profile.baseline_date != today:
+        profile.baseline_date = today
+        profile.baseline_total_pnl = total
+    daily = total - profile.baseline_total_pnl
+    open_orders = [
+        order
+        for order in profile.execution.orders.values()
+        if order.status in _OPEN_ORDER_STATUSES
+    ]
+    positions = [
+        position
+        for position in profile.inventory.positions.values()
+        if position.yes_size > 0 or position.no_size > 0 or position.realized_pnl != 0
+    ]
+    return {
+        "name": spec.name,
+        "description": spec.description,
+        "active": False,
+        "target_daily_pnl": _PAPER_DAILY_TARGET,
+        "daily_pnl": round(daily, 4),
+        "target_progress_pct": round((daily / _PAPER_DAILY_TARGET) * 100, 2),
+        "total_pnl": round(total, 4),
+        "realized_pnl": round(realized, 4),
+        "unrealized_pnl": round(unrealized, 4),
+        "open_orders": len(open_orders),
+        "open_buy_credit": _open_buy_credit(open_orders),
+        "positions": len(positions),
+        "recent_fills": len(profile.execution.recent_fills),
+        "selected_markets": len(selected),
+        "settings": {
+            "order_size": profile.settings.order_size,
+            "max_position_per_market": profile.settings.max_position_per_market,
+            "max_total_exposure": profile.settings.max_total_exposure,
+            "max_daily_loss": profile.settings.max_daily_loss,
+            "max_markets_traded": profile.settings.max_markets_traded,
+            "min_liquidity": profile.settings.min_liquidity,
+            "market_score_threshold": profile.settings.market_score_threshold,
+            "target_spread": profile.settings.target_spread,
+        },
+    }
+
+
+async def _run_shadow_strategy_profiles(
+    base_settings,
+    markets: list[Market],
+    books: dict[str, OrderBook],
+    trades: dict[str, list],
+) -> list[dict]:
+    if not base_settings.paper_trading:
+        return []
+    profiles: list[dict] = []
+    for spec in _strategy_profile_specs():
+        profile = _shadow_state(base_settings, spec)
+        scanner = MarketScanner(profile.settings)
+        strategy = MarketMakingStrategy(profile.settings, profile.inventory)
+        selected = scanner.select_markets(markets, books, trades)
+        for market in selected:
+            book = books.get(market.condition_id)
+            if not book:
+                continue
+            decision = profile.risk.check_market(market, book)
+            if not decision.allowed:
+                await profile.execution.cancel_all_for_market(market.condition_id)
+                continue
+            await profile.execution.simulate_fills(book, trades.get(market.condition_id, []))
+            signal = strategy.build_signal(market.condition_id, book, trades.get(market.condition_id, []))
+            if signal and signal.reason == REASON_TOXIC_PULL:
+                await profile.execution.cancel_all_for_market(market.condition_id)
+                continue
+            if signal and signal.bid_price and signal.ask_price:
+                position = profile.inventory.get_position(market.condition_id)
+                quotes: list[_QuoteSpec] = []
+                buy_size = _buy_quote_size(profile.settings, position, signal.size)
+                if buy_size > 0 and profile.inventory.can_quote_side(market.condition_id, Side.BUY):
+                    quotes.append(_QuoteSpec(Side.BUY, signal.bid_price, buy_size, market.yes_token_id))
+                sell_size = _sell_quote_size(profile.settings, position, signal.size)
+                if sell_size > 0:
+                    quotes.append(_QuoteSpec(Side.SELL, signal.ask_price, sell_size, market.yes_token_id))
+                await _sync_market_quotes(profile.execution, market.condition_id, quotes)
+            await profile.execution.simulate_fills(book, trades.get(market.condition_id, []))
+        managed_market_ids = {market.condition_id for market in selected}
+        managed_market_ids.update(
+            position.market_id
+            for position in profile.inventory.positions.values()
+            if position.yes_size > 0 or position.no_size > 0
+        )
+        await _cancel_unmanaged_stale_orders(profile.execution, profile.settings, managed_market_ids)
+        profiles.append(_shadow_strategy_profile_payload(spec, profile, selected, markets, books))
+    return profiles
+
+
 async def run_once() -> None:
     clear_runtime_settings_cache()
     settings = get_effective_settings()
@@ -408,6 +664,7 @@ async def run_once() -> None:
                     "daily_pnl_reset_at": state.daily_pnl_reset_at,
                     "risk_events": state.risk_events[-50:],
                     "strategy_status": state.strategy_status,
+                    "strategy_profiles": state.strategy_profiles,
                 }
             )
             logger.warning("market_fetch_failed", error=str(exc))
@@ -536,6 +793,11 @@ async def run_once() -> None:
         state.mode_warning = settings.mode_warning
         state.recent_fills = list(getattr(execution, "recent_fills", []))[-50:]
         _maybe_write_pnl_snapshot(runtime, settings)
+        shadow_profiles = await _run_shadow_strategy_profiles(settings, markets, books, trades)
+        state.strategy_profiles = [
+            _active_strategy_profile_payload(settings, state.orders),
+            *shadow_profiles,
+        ]
         save_status_snapshot(
             {
                 "bot_status": state.bot_status,
@@ -568,6 +830,7 @@ async def run_once() -> None:
                 "risk_events": state.risk_events[-50:],
                 "recent_fills": state.recent_fills,
                 "strategy_status": state.strategy_status,
+                "strategy_profiles": state.strategy_profiles,
             }
         )
     finally:
