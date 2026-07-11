@@ -68,6 +68,13 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     .risk-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.45rem; }
     .risk-item { background: #111827; border: 1px solid #1f2937; border-left: 3px solid #f59e0b; border-radius: 8px; padding: 0.6rem 0.75rem; font-size: 0.85rem; }
     .risk-item time { color: #64748b; font-size: 0.75rem; display: block; margin-top: 0.2rem; }
+    .profile-name { font-weight: 700; color: #f8fafc; }
+    .profile-desc { color: #64748b; font-size: 0.74rem; line-height: 1.35; margin-top: 0.2rem; max-width: 18rem; }
+    .profile-active { color: #93c5fd; font-size: 0.72rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.03em; }
+    .profile-settings { color: #94a3b8; font-size: 0.76rem; line-height: 1.35; }
+    .progress-track { min-width: 7rem; height: 0.45rem; background: #1e293b; border-radius: 999px; overflow: hidden; margin-top: 0.35rem; }
+    .progress-bar { height: 100%; background: #2563eb; border-radius: inherit; }
+    .progress-bar.negative { background: #dc2626; }
     .status-pill { display: inline-block; padding: 0.15rem 0.5rem; border-radius: 999px; font-size: 0.72rem; text-transform: uppercase; font-weight: 600; }
     .status-pill.open { background: #1e3a8a; color: #bfdbfe; }
     .status-pill.filled { background: #14532d; color: #bbf7d0; }
@@ -129,6 +136,11 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         <div class="pnl-actions">
           <button class="secondary" id="reset-daily-pnl" type="button">Reset today's change</button>
           <span class="pnl-reset-note" id="pnl-reset-note"></span>
+        </div>
+        <div class="section">
+          <div class="section-head"><h2>Strategy profiles</h2><span id="profiles-count"></span></div>
+          <p class="section-desc">Paper-only comparison flows. The active profile places the current paper orders; shadow profiles keep separate simulated ledgers so you can compare performance before promoting one.</p>
+          <div id="profiles-wrap"></div>
         </div>
         <div class="section">
           <div class="section-head"><h2>Recent trades</h2><span id="trades-count"></span></div>
@@ -979,6 +991,57 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       }).join("");
     }
 
+    function renderStrategyProfiles(profiles) {
+      const wrap = document.getElementById("profiles-wrap");
+      const count = document.getElementById("profiles-count");
+      if (!wrap || !count) return;
+      count.textContent = `${(profiles || []).length} profiles`;
+      if (!profiles || !profiles.length) {
+        wrap.innerHTML = '<div class="empty">No strategy profile data yet. Wait one bot loop after deployment.</div>';
+        return;
+      }
+      const rows = profiles.map((p) => {
+        const settings = p.settings || {};
+        const daily = Number(p.daily_pnl) || 0;
+        const progress = Number(p.target_progress_pct) || 0;
+        const width = Math.max(0, Math.min(Math.abs(progress), 100));
+        const progressCls = progress < 0 ? "negative" : "";
+        const active = p.active ? '<div class="profile-active">Active trading</div>' : '<div class="stat-sub">Shadow paper</div>';
+        const settingsText = [
+          `size ${fmtNum(settings.order_size, 0)}`,
+          `pos ${fmtNum(settings.max_position_per_market, 0)}`,
+          `liq ${fmtMoney(settings.min_liquidity || 0)}`,
+          `spread ${fmtPct(settings.target_spread || 0)}`,
+        ].join(" · ");
+        return `<tr>
+          <td>
+            <div class="profile-name">${escapeHtml(p.name || "profile")}</div>
+            ${active}
+            <div class="profile-desc">${escapeHtml(p.description || "")}</div>
+          </td>
+          <td class="num ${pnlClass(daily)}">
+            ${fmtMoney(daily)}
+            <div class="progress-track"><div class="progress-bar ${progressCls}" style="width:${width}%"></div></div>
+            <div class="stat-sub">${fmtNum(progress, 2)}% of ${fmtMoney(p.target_daily_pnl || 100)}/day</div>
+          </td>
+          <td class="num ${pnlClass(p.total_pnl)}">${fmtMoney(p.total_pnl || 0)}</td>
+          <td class="num">${fmtNum(p.open_orders || 0, 0)}</td>
+          <td class="num">${fmtMoney(p.open_buy_credit || 0)}</td>
+          <td class="num">${fmtNum(p.recent_fills || 0, 0)}</td>
+          <td><div class="profile-settings">${escapeHtml(settingsText)}</div></td>
+        </tr>`;
+      }).join("");
+      wrap.innerHTML = `<table class="data"><thead><tr>
+        <th>Profile</th>
+        <th title="Today versus the $100/day target">Today</th>
+        <th title="Total paper PnL in this profile ledger">Total PnL</th>
+        <th title="Open profile orders">Orders</th>
+        <th title="Cash resting in open buy orders">Buy credit</th>
+        <th title="Recent simulated fills">Fills</th>
+        <th>Settings</th>
+      </tr></thead><tbody>${rows}</tbody></table>`;
+    }
+
     async function refreshOverview() {
       try {
         const healthRes = await apiFetch("/health");
@@ -1005,19 +1068,21 @@ DASHBOARD_HTML = """<!DOCTYPE html>
           hint.textContent = text;
         }
 
-        const [markets, positions, orders, pnl, risk, fills] = await Promise.all([
+        const [markets, positions, orders, pnl, risk, fills, profiles] = await Promise.all([
           apiFetch("/selected-markets").then(readListJson),
           apiFetch("/positions").then(readListJson),
           apiFetch("/orders").then(readListJson),
           apiFetch("/pnl").then((res) => readObjectJson(res)),
           apiFetch("/risk-events").then(readListJson),
           apiFetch("/fills").then(readListJson),
+          apiFetch("/strategy-profiles").then(readListJson),
         ]);
         const marketsById = marketLookup(markets);
         renderPnlSummary(pnl, health);
         renderStats(health, pnl, markets, orders, positions, risk, fills);
         updateTradingControls(health);
         updatePnlResetNote(pnl);
+        renderStrategyProfiles(profiles);
         renderTrades(fills, marketsById);
         renderMarkets(markets);
         renderOrders(orders, marketsById);

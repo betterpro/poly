@@ -1,6 +1,12 @@
 from fastapi.testclient import TestClient
 
 from polymarket_mm_bot.dashboard import app as dashboard_app
+from polymarket_mm_bot.dashboard.pages import DASHBOARD_HTML
+
+
+def test_dashboard_renders_strategy_profiles_section():
+    assert "Strategy profiles" in DASHBOARD_HTML
+    assert "/strategy-profiles" in DASHBOARD_HTML
 
 
 def test_fills_endpoint_returns_newest_first(monkeypatch):
