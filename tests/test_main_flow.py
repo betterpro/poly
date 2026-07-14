@@ -2,7 +2,7 @@ from polymarket_mm_bot import main as bot_main
 from polymarket_mm_bot.config import Settings
 from polymarket_mm_bot.execution import PaperExecutionEngine
 from polymarket_mm_bot.inventory import InventoryManager
-from polymarket_mm_bot.models import Side
+from polymarket_mm_bot.models import BotOrder, Side
 from polymarket_mm_bot.risk import RiskEngine
 from polymarket_mm_bot.risk.engine import RiskDecision
 
@@ -76,6 +76,35 @@ async def test_unwind_quotes_sell_for_position_in_unselected_market(settings, ma
     assert len(sells) == 1
     assert sells[0].price == 0.51  # one tick inside the 0.52 best ask
     assert sells[0].size == 10
+
+
+async def test_unwind_cancels_buy_orders_for_unselected_position(settings, market, book):
+    inventory = InventoryManager(settings)
+    execution = PaperExecutionEngine(
+        settings,
+        inventory,
+        RiskEngine(settings, inventory),
+        orders={
+            "buy": BotOrder(
+                client_order_id="buy",
+                market_id="m1",
+                token_id="yes-token",
+                side=Side.BUY,
+                price=0.49,
+                size=10,
+            )
+        },
+    )
+    inventory.get_position("m1").yes_size = 10
+    inventory.get_position("m1").avg_yes_price = 0.45
+
+    await bot_main._unwind_orphaned_positions(
+        settings, inventory, execution, [market], [], {"m1": book}, {"m1": []}
+    )
+
+    assert execution.orders["buy"].status == "canceled"
+    sells = [o for o in execution.orders.values() if o.side == Side.SELL]
+    assert len(sells) == 1
 
 
 async def test_unwind_exits_sub_penny_longshot_position(settings, market):

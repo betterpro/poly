@@ -373,6 +373,13 @@ async def _unwind_orphaned_positions(
             continue
         if book.best_bid is None or book.best_ask is None:
             continue
+        for order in list(execution.orders.values()):
+            if (
+                order.market_id == position.market_id
+                and order.side == Side.BUY
+                and order.status in _OPEN_ORDER_STATUSES
+            ):
+                await execution.cancel_order(order.client_order_id)
         has_open_sell = any(
             order.market_id == position.market_id
             and order.side == Side.SELL
