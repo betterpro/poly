@@ -1,12 +1,20 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 
 from sqlalchemy.orm import Session
 
 from polymarket_mm_bot.database.orm import BotOrderRow, PnlSnapshotRow, PositionRow, RiskEventRow
 from polymarket_mm_bot.models import BotOrder, OrderStatus, Position
+
+
+def _as_utc_date(value: datetime | None) -> date | None:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=UTC)
+    return value.astimezone(UTC).date()
 
 
 def save_pnl_snapshot(
@@ -28,6 +36,43 @@ def save_pnl_snapshot(
         )
     )
     session.commit()
+
+
+def load_daily_pnl_history(session: Session, *, limit: int = 30) -> list[dict]:
+    """Return daily PnL history from the snapshot time-series.
+
+    Each day uses the last total_pnl snapshot for that UTC date. Daily profit is
+    the change versus the previous tracked day; the first day has no previous
+    baseline and reports 0 daily_pnl.
+    """
+    rows = (
+        session.query(PnlSnapshotRow)
+        .order_by(PnlSnapshotRow.timestamp.asc(), PnlSnapshotRow.id.asc())
+        .all()
+    )
+    last_by_day: dict[date, PnlSnapshotRow] = {}
+    for row in rows:
+        day = _as_utc_date(row.timestamp)
+        if day is not None:
+            last_by_day[day] = row
+
+    history: list[dict] = []
+    previous_total: float | None = None
+    for day in sorted(last_by_day):
+        row = last_by_day[day]
+        total = float(row.total_pnl or 0.0)
+        daily = 0.0 if previous_total is None else total - previous_total
+        history.append(
+            {
+                "date": day.isoformat(),
+                "daily_pnl": round(daily, 4),
+                "total_pnl": round(total, 4),
+                "unrealized_pnl": round(float(row.unrealized_pnl or 0.0), 4),
+                "timestamp": row.timestamp.isoformat() if row.timestamp else None,
+            }
+        )
+        previous_total = total
+    return history[-limit:]
 
 
 def load_orders(session: Session) -> dict[str, BotOrder]:

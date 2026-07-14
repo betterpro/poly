@@ -28,6 +28,8 @@ from polymarket_mm_bot.dashboard.snapshot_cache import (
 from polymarket_mm_bot.dashboard.pnl_baseline import load_daily_pnl_tracking, reset_daily_pnl_baseline
 from polymarket_mm_bot.dashboard.trading_control import load_trading_control, resume_trading, stop_trading
 from polymarket_mm_bot.dashboard.startup import ensure_schema
+from polymarket_mm_bot.database.runtime_state import load_daily_pnl_history
+from polymarket_mm_bot.database.session import get_session_factory
 from polymarket_mm_bot.utils import market_dict_matches_categories
 
 logger = structlog.get_logger()
@@ -329,6 +331,20 @@ def create_app() -> FastAPI:
     async def pnl() -> dict:
         snapshot = _status()
         return _build_pnl_payload(snapshot, settings.starting_capital)
+
+    @app.get("/pnl/daily")
+    async def daily_pnl(days: int = 30) -> dict:
+        if not database_ok():
+            raise HTTPException(status_code=503, detail="Database unreachable.")
+        bounded_days = min(max(days, 2), 90)
+        try:
+            session_factory = get_session_factory()
+            with session_factory() as session:
+                history = load_daily_pnl_history(session, limit=bounded_days)
+        except Exception as exc:
+            logger.warning("daily_pnl_history_failed", error=str(exc))
+            raise HTTPException(status_code=503, detail="Could not load daily PnL history.") from exc
+        return {"days": history}
 
     @app.post("/pnl/reset-daily")
     async def reset_daily_pnl() -> dict:

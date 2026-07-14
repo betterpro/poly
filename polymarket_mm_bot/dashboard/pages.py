@@ -36,6 +36,15 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     .pnl-card-label { color: #94a3b8; font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 0.4rem; }
     .pnl-card-value { font-size: 1.65rem; font-weight: 700; overflow-wrap: anywhere; }
     .pnl-card-sub { color: #64748b; font-size: 0.76rem; margin-top: 0.35rem; line-height: 1.35; }
+    .chart-wrap { background: #111827; border: 1px solid #1f2937; border-radius: 12px; padding: 0.9rem; overflow-x: auto; }
+    .chart-svg { width: 100%; min-width: 560px; height: 240px; display: block; }
+    .chart-axis { stroke: #334155; stroke-width: 1; }
+    .chart-line { fill: none; stroke: #38bdf8; stroke-width: 2.5; }
+    .chart-dot { fill: #38bdf8; }
+    .chart-bar.positive { fill: #22c55e; }
+    .chart-bar.negative { fill: #ef4444; }
+    .chart-label { fill: #94a3b8; font-size: 11px; }
+    .chart-value { fill: #e5e7eb; font-size: 11px; font-weight: 600; }
     .section { margin-bottom: 1.5rem; }
     .section-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.65rem; }
     .section-head h2 { margin: 0; font-size: 1rem; font-weight: 600; color: #f1f5f9; }
@@ -136,6 +145,11 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         <div class="pnl-actions">
           <button class="secondary" id="reset-daily-pnl" type="button">Reset today's change</button>
           <span class="pnl-reset-note" id="pnl-reset-note"></span>
+        </div>
+        <div class="section">
+          <div class="section-head"><h2>Daily profit</h2><span id="daily-pnl-count"></span></div>
+          <p class="section-desc">One point per UTC day from the saved PnL snapshots. Bars show daily profit or loss; the blue line shows total PnL.</p>
+          <div class="chart-wrap" id="daily-pnl-chart"></div>
         </div>
         <div class="section">
           <div class="section-head"><h2>Strategy profiles</h2><span id="profiles-count"></span></div>
@@ -991,6 +1005,60 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       }).join("");
     }
 
+    function renderDailyPnlChart(days) {
+      const wrap = document.getElementById("daily-pnl-chart");
+      const count = document.getElementById("daily-pnl-count");
+      if (!wrap || !count) return;
+      const rows = Array.isArray(days) ? days : [];
+      count.textContent = `${rows.length} days`;
+      if (!rows.length) {
+        wrap.innerHTML = '<div class="empty">No daily PnL snapshots yet.</div>';
+        return;
+      }
+      const width = 720;
+      const height = 230;
+      const pad = { left: 52, right: 18, top: 16, bottom: 38 };
+      const innerW = width - pad.left - pad.right;
+      const innerH = height - pad.top - pad.bottom;
+      const dailyValues = rows.map((d) => Number(d.daily_pnl) || 0);
+      const totalValues = rows.map((d) => Number(d.total_pnl) || 0);
+      const minVal = Math.min(0, ...dailyValues, ...totalValues);
+      const maxVal = Math.max(0, ...dailyValues, ...totalValues);
+      const range = Math.max(maxVal - minVal, 1);
+      const y = (value) => pad.top + (maxVal - value) / range * innerH;
+      const x = (i) => pad.left + (rows.length === 1 ? innerW / 2 : i / (rows.length - 1) * innerW);
+      const barW = Math.max(8, Math.min(34, innerW / rows.length * 0.52));
+      const zeroY = y(0);
+      const line = rows.map((d, i) => `${i === 0 ? "M" : "L"}${x(i).toFixed(1)},${y(Number(d.total_pnl) || 0).toFixed(1)}`).join(" ");
+      const bars = rows.map((d, i) => {
+        const value = Number(d.daily_pnl) || 0;
+        const top = Math.min(y(value), zeroY);
+        const h = Math.max(Math.abs(y(value) - zeroY), 1);
+        const cls = value >= 0 ? "positive" : "negative";
+        return `<rect class="chart-bar ${cls}" x="${(x(i) - barW / 2).toFixed(1)}" y="${top.toFixed(1)}" width="${barW.toFixed(1)}" height="${h.toFixed(1)}"><title>${escapeHtml(d.date)} daily ${fmtMoney(value)} · total ${fmtMoney(d.total_pnl)}</title></rect>`;
+      }).join("");
+      const dots = rows.map((d, i) =>
+        `<circle class="chart-dot" cx="${x(i).toFixed(1)}" cy="${y(Number(d.total_pnl) || 0).toFixed(1)}" r="3"><title>${escapeHtml(d.date)} total ${fmtMoney(d.total_pnl)}</title></circle>`
+      ).join("");
+      const labels = rows.map((d, i) => {
+        const show = rows.length <= 10 || i === 0 || i === rows.length - 1 || i % Math.ceil(rows.length / 8) === 0;
+        if (!show) return "";
+        const label = String(d.date || "").slice(5);
+        return `<text class="chart-label" x="${x(i).toFixed(1)}" y="${height - 14}" text-anchor="middle">${escapeHtml(label)}</text>`;
+      }).join("");
+      wrap.innerHTML = `<svg class="chart-svg" viewBox="0 0 ${width} ${height}" role="img" aria-label="Daily profit chart">
+        <line class="chart-axis" x1="${pad.left}" y1="${zeroY.toFixed(1)}" x2="${width - pad.right}" y2="${zeroY.toFixed(1)}"></line>
+        <line class="chart-axis" x1="${pad.left}" y1="${pad.top}" x2="${pad.left}" y2="${height - pad.bottom}"></line>
+        <text class="chart-label" x="6" y="${y(maxVal).toFixed(1)}">${escapeHtml(fmtMoney(maxVal))}</text>
+        <text class="chart-label" x="6" y="${zeroY.toFixed(1)}">${escapeHtml(fmtMoney(0))}</text>
+        <text class="chart-label" x="6" y="${y(minVal).toFixed(1)}">${escapeHtml(fmtMoney(minVal))}</text>
+        ${bars}
+        <path class="chart-line" d="${line}"></path>
+        ${dots}
+        ${labels}
+      </svg>`;
+    }
+
     function renderStrategyProfiles(profiles) {
       const wrap = document.getElementById("profiles-wrap");
       const count = document.getElementById("profiles-count");
@@ -1068,7 +1136,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
           hint.textContent = text;
         }
 
-        const [markets, positions, orders, pnl, risk, fills, profiles] = await Promise.all([
+        const [markets, positions, orders, pnl, risk, fills, profiles, dailyHistory] = await Promise.all([
           apiFetch("/selected-markets").then(readListJson),
           apiFetch("/positions").then(readListJson),
           apiFetch("/orders").then(readListJson),
@@ -1076,12 +1144,14 @@ DASHBOARD_HTML = """<!DOCTYPE html>
           apiFetch("/risk-events").then(readListJson),
           apiFetch("/fills").then(readListJson),
           apiFetch("/strategy-profiles").then(readListJson),
+          apiFetch("/pnl/daily").then((res) => readObjectJson(res, { days: [] })),
         ]);
         const marketsById = marketLookup(markets);
         renderPnlSummary(pnl, health);
         renderStats(health, pnl, markets, orders, positions, risk, fills);
         updateTradingControls(health);
         updatePnlResetNote(pnl);
+        renderDailyPnlChart(dailyHistory.days);
         renderStrategyProfiles(profiles);
         renderTrades(fills, marketsById);
         renderMarkets(markets);

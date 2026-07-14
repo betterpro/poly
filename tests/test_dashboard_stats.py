@@ -7,6 +7,8 @@ from polymarket_mm_bot.dashboard.pages import DASHBOARD_HTML
 def test_dashboard_renders_strategy_profiles_section():
     assert "Strategy profiles" in DASHBOARD_HTML
     assert "/strategy-profiles" in DASHBOARD_HTML
+    assert "Daily profit" in DASHBOARD_HTML
+    assert "/pnl/daily" in DASHBOARD_HTML
 
 
 def test_fills_endpoint_returns_newest_first(monkeypatch):
@@ -159,3 +161,30 @@ def test_dashboard_pnl_reconciles_total_and_daily_baseline(monkeypatch):
     assert body["total_sold"] == 1.2
     assert body["starting_capital"] == 10_000.0
     assert body["available_credit"] == 9992.5
+
+
+def test_daily_pnl_endpoint_returns_history(tmp_path, monkeypatch):
+    from datetime import UTC, datetime
+
+    db = tmp_path / "daily-endpoint.db"
+    monkeypatch.setenv("DATABASE_URL", f"sqlite+pysqlite:///{db.as_posix()}")
+    monkeypatch.setenv("DASHBOARD_PASSWORD", "secret")
+    from polymarket_mm_bot.config.settings import get_settings
+    from polymarket_mm_bot.database.orm import Base, PnlSnapshotRow
+    from polymarket_mm_bot.database.session import get_engine, get_session_factory
+
+    get_settings.cache_clear()
+    monkeypatch.setattr("polymarket_mm_bot.dashboard.app.ensure_schema", lambda: None)
+    Base.metadata.create_all(get_engine())
+    with get_session_factory()() as session:
+        session.add(PnlSnapshotRow(timestamp=datetime(2026, 7, 10, tzinfo=UTC), total_pnl=1, daily_pnl=0, unrealized_pnl=0, metadata_json={}))
+        session.add(PnlSnapshotRow(timestamp=datetime(2026, 7, 11, tzinfo=UTC), total_pnl=3.5, daily_pnl=2.5, unrealized_pnl=1, metadata_json={}))
+        session.commit()
+
+    client = TestClient(dashboard_app.create_app())
+    client.auth = ("admin", "secret")
+
+    body = client.get("/pnl/daily").json()
+
+    assert [row["date"] for row in body["days"]] == ["2026-07-10", "2026-07-11"]
+    assert body["days"][1]["daily_pnl"] == 2.5
