@@ -78,3 +78,32 @@ def test_market_scoring_rejects_sub_minimum_positive_spread(settings, market):
     score = MarketScanner(settings).score_market(market, book, [])
     assert score.rejected is True
     assert "spread_too_small" in score.reasons
+
+
+def test_market_scoring_rejects_low_price_longshot(settings, market):
+    settings.min_spread = 0.005
+    book = OrderBook(
+        market_id="m1",
+        token_id="yes-token",
+        bids=[BookLevel(price=0.03, size=5000)],
+        asks=[BookLevel(price=0.04, size=5000)],
+    )
+
+    score = MarketScanner(settings).score_market(market, book, [])
+
+    assert score.rejected is True
+    assert "price_below_min_quote" in score.reasons
+
+
+def test_market_scoring_accepts_price_at_min_quote(settings, market):
+    settings.min_spread = 0.005
+    book = OrderBook(
+        market_id="m1",
+        token_id="yes-token",
+        bids=[BookLevel(price=0.04, size=5000)],
+        asks=[BookLevel(price=settings.min_quote_price, size=5000)],
+    )
+
+    score = MarketScanner(settings).score_market(market, book, [])
+
+    assert "price_below_min_quote" not in score.reasons

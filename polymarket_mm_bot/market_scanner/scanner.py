@@ -55,6 +55,8 @@ class MarketScanner:
         stale_score = 10.0
         if order_book:
             spread = order_book.spread
+            if order_book.best_ask is not None and order_book.best_ask < self.settings.min_quote_price:
+                reasons.append("price_below_min_quote")
             if spread is None or spread < self.settings.min_spread:
                 reasons.append("spread_too_small")
             elif spread > 0.15:
@@ -119,6 +121,7 @@ class MarketScanner:
                 "stale_order_book",
                 "missing_order_book",
                 "spread_too_small",
+                "price_below_min_quote",
                 "high_volatility",
             ]
         )

@@ -52,6 +52,7 @@ class Settings(BaseSettings):
     min_volume: float = 10_000.0
     min_liquidity: float = 2_000.0
     min_spread: float = 0.01
+    min_quote_price: float = 0.05
     market_score_threshold: float = 70.0
     min_time_to_resolution_hours: float = 12.0
     allow_near_resolution: bool = False
