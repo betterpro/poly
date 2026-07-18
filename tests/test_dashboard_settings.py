@@ -19,11 +19,18 @@ def test_settings_round_trip(tmp_path, monkeypatch):
     client.auth = ("admin", "secret")
     current = client.get("/settings").json()
     assert current["paper_trading"] is True
-    updated = {**current, "order_size": 15, "target_spread": 0.03, "allowed_categories": ["sports", "crypto"]}
+    updated = {
+        **current,
+        "order_size": 15,
+        "target_spread": 0.03,
+        "per_market_stop_loss": 1.5,
+        "allowed_categories": ["sports", "crypto"],
+    }
     response = client.put("/settings", json=updated)
     assert response.status_code == 200
     body = response.json()
     assert body["order_size"] == 15
+    assert body["per_market_stop_loss"] == 1.5
     assert body["allowed_categories"] == ["sports", "crypto"]
     assert EditableBotSettings.model_validate(body).order_size == 15
 

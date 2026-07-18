@@ -157,6 +157,11 @@ DASHBOARD_HTML = """<!DOCTYPE html>
           <div id="profiles-wrap"></div>
         </div>
         <div class="section">
+          <div class="section-head"><h2>Performance optimizer</h2><span id="optimizer-count"></span></div>
+          <p class="section-desc">Uses persisted fills to rank markets by realized PnL. Scale candidates need repeatable positive fills; reduce candidates should not receive more buy exposure.</p>
+          <div id="optimizer-wrap"></div>
+        </div>
+        <div class="section">
           <div class="section-head"><h2>Recent trades</h2><span id="trades-count"></span></div>
           <p class="section-desc">Each row is a fill — a moment the bot actually bought or sold shares. <b class="side-buy">BUY</b> puts credit out (cash spent); <b class="side-sell">SELL</b> brings proceeds back. Price is per share in cents (0–100¢). The cash-flow column shows money in or out on that trade.</p>
           <div id="trades-wrap"></div>
@@ -216,6 +221,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   <script>
     const fields = [
       ["max_daily_loss", "number", "Max daily loss"],
+      ["per_market_stop_loss", "number", "Per-market stop loss"],
       ["max_position_per_market", "number", "Max position / market"],
       ["max_total_exposure", "number", "Max total exposure"],
       ["max_order_size", "number", "Max order size"],
@@ -235,6 +241,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       paper_trading: "Simulate quotes and fills only. No real Polymarket orders are sent.",
       run_mode: "Paper uses the simulator; live sends real orders (requires LIVE_TRADING_CONFIRMED and wallet env vars).",
       max_daily_loss: "Stop trading when today's PnL falls below this loss, in USD. Resets each calendar day.",
+      per_market_stop_loss: "Stop adding new buy exposure to a market once its marked PnL is below this loss. Sells remain allowed so inventory can exit.",
       max_position_per_market: "Maximum shares held on one side (yes or no) in a single market.",
       max_total_exposure: "Cap on total capital at risk across all open positions, in USD.",
       max_order_size: "Largest single order the bot may place, in shares.",
@@ -1110,6 +1117,34 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       </tr></thead><tbody>${rows}</tbody></table>`;
     }
 
+    function renderOptimizer(report) {
+      const wrap = document.getElementById("optimizer-wrap");
+      const count = document.getElementById("optimizer-count");
+      if (!wrap || !count) return;
+      const summary = report && report.summary ? report.summary : {};
+      const rows = Array.isArray(report && report.markets) ? report.markets : [];
+      count.textContent = `${summary.fills || 0} fills · ${summary.markets || 0} markets`;
+      if (!rows.length) {
+        wrap.innerHTML = '<div class="empty">No persisted fill analytics yet.</div>';
+        return;
+      }
+      const html = rows.slice(0, 8).map((m) => {
+        const rec = String(m.recommendation || "keep_observing").replaceAll("_", " ");
+        const title = m.question || m.market_id || "";
+        return `<tr>
+          <td>${escapeHtml(title)}</td>
+          <td>${escapeHtml(rec)}</td>
+          <td class="num ${pnlClass(m.realized_pnl)}">${fmtMoney(m.realized_pnl || 0)}</td>
+          <td class="num">${fmtNum(m.roi_pct || 0, 2)}%</td>
+          <td class="num">${fmtNum(m.fills || 0, 0)}</td>
+          <td class="num">${fmtMoney(m.bought_notional || 0)}</td>
+        </tr>`;
+      }).join("");
+      wrap.innerHTML = `<table class="data"><thead><tr>
+        <th>Market</th><th>Recommendation</th><th>Realized</th><th>ROI</th><th>Fills</th><th>Bought</th>
+      </tr></thead><tbody>${html}</tbody></table>`;
+    }
+
     async function refreshOverview() {
       try {
         const healthRes = await apiFetch("/health");
@@ -1136,7 +1171,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
           hint.textContent = text;
         }
 
-        const [markets, positions, orders, pnl, risk, fills, profiles, dailyHistory] = await Promise.all([
+        const [markets, positions, orders, pnl, risk, fills, profiles, dailyHistory, optimizer] = await Promise.all([
           apiFetch("/selected-markets").then(readListJson),
           apiFetch("/positions").then(readListJson),
           apiFetch("/orders").then(readListJson),
@@ -1145,6 +1180,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
           apiFetch("/fills").then(readListJson),
           apiFetch("/strategy-profiles").then(readListJson),
           apiFetch("/pnl/daily").then((res) => readObjectJson(res, { days: [] })),
+          apiFetch("/performance/optimizer").then((res) => readObjectJson(res)),
         ]);
         const marketsById = marketLookup(markets);
         renderPnlSummary(pnl, health);
@@ -1153,6 +1189,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         updatePnlResetNote(pnl);
         renderDailyPnlChart(dailyHistory.days);
         renderStrategyProfiles(profiles);
+        renderOptimizer(optimizer);
         renderTrades(fills, marketsById);
         renderMarkets(markets);
         renderOrders(orders, marketsById);

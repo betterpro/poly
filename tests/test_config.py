@@ -9,6 +9,7 @@ def test_paper_trading_default_is_safe():
     assert settings.paper_trading is True
     assert settings.live_trading_confirmed is False
     assert settings.min_quote_price == 0.05
+    assert settings.per_market_stop_loss == 2.0
 
 
 def test_live_trading_requires_confirmation_and_key():

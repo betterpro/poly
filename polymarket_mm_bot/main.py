@@ -280,6 +280,21 @@ def _buy_quote_size(settings, position: Position, signal_size: float) -> float:
     return min(tapered, signal_size, settings.max_order_size, remaining)
 
 
+def _position_marked_pnl(inventory, position: Position, mark_price: float | None) -> float:
+    unrealized = inventory.unrealized_pnl(position.market_id, mark_price) if mark_price is not None else 0.0
+    return position.realized_pnl + unrealized
+
+
+async def _cancel_buy_orders_for_market(execution, market_id: str) -> None:
+    for order in list(execution.orders.values()):
+        if (
+            order.market_id == market_id
+            and order.side == Side.BUY
+            and order.status in _OPEN_ORDER_STATUSES
+        ):
+            await execution.cancel_order(order.client_order_id)
+
+
 def _metadata_float(value) -> float | None:
     try:
         return float(value)
@@ -505,6 +520,7 @@ def _active_strategy_profile_payload(settings, orders: list[BotOrder]) -> dict:
             "max_position_per_market": settings.max_position_per_market,
             "max_total_exposure": settings.max_total_exposure,
             "max_daily_loss": settings.max_daily_loss,
+            "per_market_stop_loss": settings.per_market_stop_loss,
             "max_markets_traded": settings.max_markets_traded,
             "min_liquidity": settings.min_liquidity,
             "market_score_threshold": settings.market_score_threshold,
@@ -557,6 +573,7 @@ def _shadow_strategy_profile_payload(
             "max_position_per_market": profile.settings.max_position_per_market,
             "max_total_exposure": profile.settings.max_total_exposure,
             "max_daily_loss": profile.settings.max_daily_loss,
+            "per_market_stop_loss": profile.settings.per_market_stop_loss,
             "max_markets_traded": profile.settings.max_markets_traded,
             "min_liquidity": profile.settings.min_liquidity,
             "market_score_threshold": profile.settings.market_score_threshold,
@@ -750,9 +767,15 @@ async def run_once() -> None:
                 elif signal and signal.bid_price and signal.ask_price:
                     quotes: list[_QuoteSpec] = []
                     position = inventory.get_position(market.condition_id)
-                    buy_size = _buy_quote_size(settings, position, signal.size)
-                    if buy_size > 0 and inventory.can_quote_side(market.condition_id, Side.BUY):
-                        quotes.append(_QuoteSpec(Side.BUY, signal.bid_price, buy_size, market.yes_token_id))
+                    marked_pnl = _position_marked_pnl(inventory, position, mark_prices.get(market.condition_id))
+                    market_stop_loss = abs(getattr(settings, "per_market_stop_loss", 2.0))
+                    if marked_pnl <= -market_stop_loss:
+                        await _cancel_buy_orders_for_market(execution, market.condition_id)
+                        strategy_status[market.condition_id] = "market_stop_loss_exit_only"
+                    else:
+                        buy_size = _buy_quote_size(settings, position, signal.size)
+                        if buy_size > 0 and inventory.can_quote_side(market.condition_id, Side.BUY):
+                            quotes.append(_QuoteSpec(Side.BUY, signal.bid_price, buy_size, market.yes_token_id))
                     sell_size = _sell_quote_size(settings, position, signal.size)
                     if sell_size > 0:
                         quotes.append(_QuoteSpec(Side.SELL, signal.ask_price, sell_size, market.yes_token_id))

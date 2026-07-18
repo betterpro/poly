@@ -9,6 +9,8 @@ def test_dashboard_renders_strategy_profiles_section():
     assert "/strategy-profiles" in DASHBOARD_HTML
     assert "Daily profit" in DASHBOARD_HTML
     assert "/pnl/daily" in DASHBOARD_HTML
+    assert "Performance optimizer" in DASHBOARD_HTML
+    assert "/performance/optimizer" in DASHBOARD_HTML
 
 
 def test_fills_endpoint_returns_newest_first(monkeypatch):
@@ -188,3 +190,39 @@ def test_daily_pnl_endpoint_returns_history(tmp_path, monkeypatch):
 
     assert [row["date"] for row in body["days"]] == ["2026-07-10", "2026-07-11"]
     assert body["days"][1]["daily_pnl"] == 2.5
+
+
+def test_optimizer_endpoint_returns_market_recommendations(tmp_path, monkeypatch):
+    from datetime import UTC, datetime
+
+    db = tmp_path / "optimizer.db"
+    monkeypatch.setenv("DATABASE_URL", f"sqlite+pysqlite:///{db.as_posix()}")
+    monkeypatch.setenv("DASHBOARD_PASSWORD", "secret")
+    from polymarket_mm_bot.config.settings import get_settings
+    from polymarket_mm_bot.database.orm import Base, MarketRow, TradeRow
+    from polymarket_mm_bot.database.session import get_engine, get_session_factory
+
+    get_settings.cache_clear()
+    monkeypatch.setattr("polymarket_mm_bot.dashboard.app.ensure_schema", lambda: None)
+    Base.metadata.create_all(get_engine())
+    with get_session_factory()() as session:
+        session.add(MarketRow(condition_id="m1", question="Will this profit?", metadata_json={}))
+        session.add_all(
+            [
+                TradeRow(order_id="b1", market_id="m1", token_id="yes", side="buy", price=0.4, size=10, timestamp=datetime(2026, 7, 18, 1, tzinfo=UTC)),
+                TradeRow(order_id="s1", market_id="m1", token_id="yes", side="sell", price=0.5, size=5, timestamp=datetime(2026, 7, 18, 2, tzinfo=UTC)),
+                TradeRow(order_id="s2", market_id="m1", token_id="yes", side="sell", price=0.52, size=5, timestamp=datetime(2026, 7, 18, 3, tzinfo=UTC)),
+                TradeRow(order_id="b2", market_id="m1", token_id="yes", side="buy", price=0.41, size=1, timestamp=datetime(2026, 7, 18, 4, tzinfo=UTC)),
+            ]
+        )
+        session.commit()
+
+    client = TestClient(dashboard_app.create_app())
+    client.auth = ("admin", "secret")
+
+    body = client.get("/performance/optimizer").json()
+
+    assert body["summary"]["fills"] == 4
+    assert body["markets"][0]["market_id"] == "m1"
+    assert body["markets"][0]["realized_pnl"] == 1.1
+    assert body["markets"][0]["recommendation"] == "candidate_scale_up"

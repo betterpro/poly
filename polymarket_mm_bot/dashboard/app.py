@@ -30,6 +30,7 @@ from polymarket_mm_bot.dashboard.trading_control import load_trading_control, re
 from polymarket_mm_bot.dashboard.startup import ensure_schema
 from polymarket_mm_bot.database.runtime_state import load_daily_pnl_history
 from polymarket_mm_bot.database.session import get_session_factory
+from polymarket_mm_bot.reporting.optimizer import build_optimizer_report
 from polymarket_mm_bot.utils import market_dict_matches_categories
 
 logger = structlog.get_logger()
@@ -345,6 +346,19 @@ def create_app() -> FastAPI:
             logger.warning("daily_pnl_history_failed", error=str(exc))
             raise HTTPException(status_code=503, detail="Could not load daily PnL history.") from exc
         return {"days": history}
+
+    @app.get("/performance/optimizer")
+    async def performance_optimizer(limit: int = 20) -> dict:
+        if not database_ok():
+            raise HTTPException(status_code=503, detail="Database unreachable.")
+        bounded_limit = min(max(limit, 1), 100)
+        try:
+            session_factory = get_session_factory()
+            with session_factory() as session:
+                return build_optimizer_report(session, limit=bounded_limit)
+        except Exception as exc:
+            logger.warning("optimizer_report_failed", error=str(exc))
+            raise HTTPException(status_code=503, detail="Could not load optimizer report.") from exc
 
     @app.post("/pnl/reset-daily")
     async def reset_daily_pnl() -> dict:

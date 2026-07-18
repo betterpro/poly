@@ -1,10 +1,14 @@
 from datetime import UTC, datetime, timedelta
 
+import pytest
+
 from polymarket_mm_bot.main import (
     _QuoteSpec,
     _buy_quote_size,
+    _cancel_buy_orders_for_market,
     _cancel_unmanaged_stale_orders,
     _metadata_quoteable,
+    _position_marked_pnl,
     _quote_matches,
     _sell_quote_size,
     _sync_market_quotes,
@@ -35,6 +39,18 @@ def test_sell_quote_size_uses_max_clip_when_inventory_is_high(settings):
 def test_sell_quote_size_uses_signal_size_for_normal_inventory(settings):
     position = Position(market_id="m1", yes_size=12)
     assert _sell_quote_size(settings, position, signal_size=5) == 5
+
+
+def test_position_marked_pnl_includes_unrealized(settings):
+    from polymarket_mm_bot.inventory import InventoryManager
+
+    inventory = InventoryManager(settings)
+    position = inventory.get_position("m1")
+    position.yes_size = 10
+    position.avg_yes_price = 0.5
+    position.realized_pnl = -0.5
+
+    assert _position_marked_pnl(inventory, position, 0.4) == pytest.approx(-1.5)
 
 
 def test_quote_matches_requires_exact_resting_quote():
@@ -151,6 +167,19 @@ async def test_sync_market_quotes_cancels_disabled_side():
     assert execution.canceled == ["buy"]
     assert execution.created == []
     assert sell.status == OrderStatus.OPEN
+
+
+async def test_cancel_buy_orders_for_market_keeps_sell_exits():
+    buy = BotOrder(client_order_id="buy", market_id="m1", side=Side.BUY, price=0.5, size=10)
+    sell = BotOrder(client_order_id="sell", market_id="m1", side=Side.SELL, price=0.6, size=10)
+    other = BotOrder(client_order_id="other", market_id="m2", side=Side.BUY, price=0.5, size=10)
+    execution = FakeExecution([buy, sell, other])
+
+    await _cancel_buy_orders_for_market(execution, "m1")
+
+    assert execution.canceled == ["buy"]
+    assert sell.status == OrderStatus.OPEN
+    assert other.status == OrderStatus.OPEN
 
 
 async def test_cancel_unmanaged_stale_orders_keeps_managed_market(settings):
