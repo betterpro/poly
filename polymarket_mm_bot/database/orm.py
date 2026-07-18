@@ -48,6 +48,7 @@ class TradeRow(Base):
     __tablename__ = "trades"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    order_id: Mapped[str | None] = mapped_column(String(128), index=True)
     market_id: Mapped[str] = mapped_column(String(128), index=True)
     token_id: Mapped[str | None] = mapped_column(String(256), index=True)
     price: Mapped[float] = mapped_column(Float)

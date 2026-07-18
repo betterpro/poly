@@ -64,6 +64,36 @@ def test_pnl_snapshot_persists(tmp_path, monkeypatch):
     assert rows[0].unrealized_pnl == 2.0
 
 
+def test_save_fill_trade_is_idempotent(tmp_path, monkeypatch):
+    db = tmp_path / "fill-trades.db"
+    monkeypatch.setenv("DATABASE_URL", f"sqlite+pysqlite:///{db.as_posix()}")
+    from polymarket_mm_bot.config.settings import Settings as S
+    from polymarket_mm_bot.config.settings import get_settings
+    from polymarket_mm_bot.database.orm import Base, TradeRow
+    from polymarket_mm_bot.database.runtime_state import save_fill_trade
+    from polymarket_mm_bot.database.session import get_engine, get_session_factory
+
+    get_settings.cache_clear()
+    Base.metadata.create_all(get_engine())
+    factory = get_session_factory(S())
+    fill = {
+        "order_id": "paper-1",
+        "market_id": "m1",
+        "token_id": "yes-token",
+        "side": "buy",
+        "price": 0.42,
+        "size": 5,
+        "at": "2026-07-18T09:00:00+00:00",
+    }
+    with factory() as session:
+        assert save_fill_trade(session, fill) is True
+        assert save_fill_trade(session, fill) is False
+        rows = session.query(TradeRow).all()
+
+    assert len(rows) == 1
+    assert rows[0].order_id == "paper-1"
+
+
 def test_daily_pnl_history_groups_last_snapshot_per_day(tmp_path, monkeypatch):
     db = tmp_path / "pnl-history.db"
     monkeypatch.setenv("DATABASE_URL", f"sqlite+pysqlite:///{db.as_posix()}")

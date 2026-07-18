@@ -45,6 +45,41 @@ async def test_paper_fill_records_trade_feed(settings, book):
     assert fill["size"] == 10
     assert fill["value"] == round(10 * fill["price"], 6)
     assert fill["at"]
+    assert fill["token_id"] == "yes-token"
+
+
+async def test_paper_fill_persists_trade_row(tmp_path, monkeypatch, settings, book):
+    db = tmp_path / "fills.db"
+    monkeypatch.setenv("DATABASE_URL", f"sqlite+pysqlite:///{db.as_posix()}")
+    from polymarket_mm_bot.config.settings import Settings as S
+    from polymarket_mm_bot.config.settings import get_settings
+    from polymarket_mm_bot.database.orm import Base, TradeRow
+    from polymarket_mm_bot.database.session import get_engine, get_session_factory
+
+    get_settings.cache_clear()
+    Base.metadata.create_all(get_engine())
+    factory = get_session_factory(S())
+    inventory = InventoryManager(settings)
+    execution = PaperExecutionEngine(
+        settings,
+        inventory,
+        RiskEngine(settings, inventory),
+        session_factory=factory,
+    )
+
+    await execution.create_order("m1", Side.BUY, 0.53, 10, "yes-token")
+    await execution.simulate_fills(book)
+
+    with factory() as session:
+        rows = session.query(TradeRow).all()
+
+    assert len(rows) == 1
+    assert rows[0].order_id == execution.recent_fills[0]["order_id"]
+    assert rows[0].market_id == "m1"
+    assert rows[0].token_id == "yes-token"
+    assert rows[0].side == "buy"
+    assert rows[0].price == 0.53
+    assert rows[0].size == 10
 
 
 async def test_passive_buy_at_bid_does_not_fill(settings):

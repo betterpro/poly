@@ -5,7 +5,7 @@ from datetime import UTC, date, datetime
 
 from sqlalchemy.orm import Session
 
-from polymarket_mm_bot.database.orm import BotOrderRow, PnlSnapshotRow, PositionRow, RiskEventRow
+from polymarket_mm_bot.database.orm import BotOrderRow, PnlSnapshotRow, PositionRow, RiskEventRow, TradeRow
 from polymarket_mm_bot.models import BotOrder, OrderStatus, Position
 
 
@@ -36,6 +36,57 @@ def save_pnl_snapshot(
         )
     )
     session.commit()
+
+
+def _parse_fill_timestamp(value: str | datetime | None) -> datetime:
+    if isinstance(value, datetime):
+        timestamp = value
+    elif isinstance(value, str) and value:
+        timestamp = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    else:
+        timestamp = datetime.now(UTC)
+    if timestamp.tzinfo is None:
+        timestamp = timestamp.replace(tzinfo=UTC)
+    return timestamp.astimezone(UTC)
+
+
+def save_fill_trade(session: Session, fill: dict) -> bool:
+    """Persist a bot fill into trades, returning False when it already exists."""
+    order_id = fill.get("order_id")
+    timestamp = _parse_fill_timestamp(fill.get("at") or fill.get("timestamp"))
+    market_id = fill.get("market_id")
+    if not market_id:
+        return False
+    price = float(fill.get("price") or 0.0)
+    size = float(fill.get("size") or 0.0)
+    if size <= 0:
+        return False
+    if order_id:
+        existing = (
+            session.query(TradeRow)
+            .filter(
+                TradeRow.order_id == order_id,
+                TradeRow.timestamp == timestamp,
+                TradeRow.price == price,
+                TradeRow.size == size,
+            )
+            .first()
+        )
+        if existing is not None:
+            return False
+    session.add(
+        TradeRow(
+            order_id=order_id,
+            market_id=str(market_id),
+            token_id=fill.get("token_id"),
+            price=price,
+            size=size,
+            side=fill.get("side"),
+            timestamp=timestamp,
+        )
+    )
+    session.commit()
+    return True
 
 
 def load_daily_pnl_history(session: Session, *, limit: int = 30) -> list[dict]:
