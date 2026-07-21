@@ -21,6 +21,7 @@ from polymarket_mm_bot.logging import configure_logging
 from polymarket_mm_bot.models import BotOrder, Market, OrderBook, OrderStatus, Position, Side
 from polymarket_mm_bot.market_scanner import MarketScanner
 from polymarket_mm_bot.risk import RiskEngine
+from polymarket_mm_bot.reporting.optimizer import build_optimizer_controls
 from polymarket_mm_bot.strategy import REASON_TOXIC_PULL, MarketMakingStrategy
 from polymarket_mm_bot.trading_runtime import get_trading_runtime
 from polymarket_mm_bot.utils import clamp, estimate_taker_fee, maker_fee
@@ -61,6 +62,13 @@ class _QuoteSpec:
     price: float
     size: float
     token_id: str | None
+
+
+@dataclass(frozen=True)
+class _OptimizerControls:
+    blocked_market_ids: set[str]
+    scaled_market_ids: set[str]
+    report: dict | None = None
 
 
 @dataclass(frozen=True)
@@ -280,6 +288,13 @@ def _buy_quote_size(settings, position: Position, signal_size: float) -> float:
     return min(tapered, signal_size, settings.max_order_size, remaining)
 
 
+def _scaled_signal_size(settings, market_id: str, signal_size: float, controls: _OptimizerControls) -> float:
+    if market_id not in controls.scaled_market_ids:
+        return signal_size
+    multiplier = clamp(getattr(settings, "optimizer_scale_multiplier", 1.5), 1.0, 3.0)
+    return min(signal_size * multiplier, settings.max_order_size)
+
+
 def _position_marked_pnl(inventory, position: Position, mark_price: float | None) -> float:
     unrealized = inventory.unrealized_pnl(position.market_id, mark_price) if mark_price is not None else 0.0
     return position.realized_pnl + unrealized
@@ -293,6 +308,22 @@ async def _cancel_buy_orders_for_market(execution, market_id: str) -> None:
             and order.status in _OPEN_ORDER_STATUSES
         ):
             await execution.cancel_order(order.client_order_id)
+
+
+def _load_optimizer_controls(runtime, settings) -> _OptimizerControls:
+    if runtime.session_factory is None:
+        return _OptimizerControls(set(), set(), None)
+    try:
+        with runtime.session_factory() as session:
+            payload = build_optimizer_controls(session, settings)
+    except Exception as exc:
+        logger.warning("optimizer_controls_failed", error=str(exc))
+        return _OptimizerControls(set(), set(), None)
+    return _OptimizerControls(
+        blocked_market_ids=set(payload.get("blocked_market_ids") or []),
+        scaled_market_ids=set(payload.get("scaled_market_ids") or []),
+        report=payload.get("report"),
+    )
 
 
 def _metadata_float(value) -> float | None:
@@ -521,6 +552,8 @@ def _active_strategy_profile_payload(settings, orders: list[BotOrder]) -> dict:
             "max_total_exposure": settings.max_total_exposure,
             "max_daily_loss": settings.max_daily_loss,
             "per_market_stop_loss": settings.per_market_stop_loss,
+            "optimizer_auto_enabled": settings.optimizer_auto_enabled,
+            "optimizer_scale_multiplier": settings.optimizer_scale_multiplier,
             "max_markets_traded": settings.max_markets_traded,
             "min_liquidity": settings.min_liquidity,
             "market_score_threshold": settings.market_score_threshold,
@@ -719,6 +752,13 @@ async def run_once() -> None:
             risk.reset_api_errors()
 
         selected = scanner.select_markets(markets, books, trades)
+        optimizer_controls = _load_optimizer_controls(runtime, settings)
+        if optimizer_controls.blocked_market_ids:
+            selected = [
+                market for market in selected if market.condition_id not in optimizer_controls.blocked_market_ids
+            ]
+            for market_id in optimizer_controls.blocked_market_ids:
+                await _cancel_buy_orders_for_market(execution, market_id)
         state.selected_markets = selected
         trading_enabled = is_trading_enabled() and not api_blocked
         trade_mode = "paper_trading" if settings.paper_trading else "live_trading"
@@ -773,7 +813,13 @@ async def run_once() -> None:
                         await _cancel_buy_orders_for_market(execution, market.condition_id)
                         strategy_status[market.condition_id] = "market_stop_loss_exit_only"
                     else:
-                        buy_size = _buy_quote_size(settings, position, signal.size)
+                        signal_size = _scaled_signal_size(
+                            settings,
+                            market.condition_id,
+                            signal.size,
+                            optimizer_controls,
+                        )
+                        buy_size = _buy_quote_size(settings, position, signal_size)
                         if buy_size > 0 and inventory.can_quote_side(market.condition_id, Side.BUY):
                             quotes.append(_QuoteSpec(Side.BUY, signal.bid_price, buy_size, market.yes_token_id))
                     sell_size = _sell_quote_size(settings, position, signal.size)
@@ -861,6 +907,11 @@ async def run_once() -> None:
                 "recent_fills": state.recent_fills,
                 "strategy_status": state.strategy_status,
                 "strategy_profiles": state.strategy_profiles,
+                "optimizer_controls": {
+                    "blocked_market_ids": sorted(optimizer_controls.blocked_market_ids),
+                    "scaled_market_ids": sorted(optimizer_controls.scaled_market_ids),
+                    "summary": (optimizer_controls.report or {}).get("summary", {}),
+                },
             }
         )
     finally:

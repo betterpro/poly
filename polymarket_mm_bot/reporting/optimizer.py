@@ -4,6 +4,7 @@ from dataclasses import dataclass
 
 from sqlalchemy.orm import Session
 
+from polymarket_mm_bot.config import Settings
 from polymarket_mm_bot.database.orm import MarketRow, TradeRow
 
 
@@ -119,4 +120,15 @@ def build_optimizer_report(session: Session, *, limit: int = 20) -> dict:
         "scale_candidates": scale[:limit],
         "reduce_candidates": reduce[:limit],
         "markets": payloads[:limit],
+    }
+
+
+def build_optimizer_controls(session: Session, settings: Settings) -> dict:
+    if not getattr(settings, "optimizer_auto_enabled", True):
+        return {"blocked_market_ids": [], "scaled_market_ids": [], "report": build_optimizer_report(session)}
+    report = build_optimizer_report(session, limit=100)
+    return {
+        "blocked_market_ids": [row["market_id"] for row in report["reduce_candidates"]],
+        "scaled_market_ids": [row["market_id"] for row in report["scale_candidates"]],
+        "report": report,
     }

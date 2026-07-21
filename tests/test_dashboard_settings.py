@@ -24,6 +24,8 @@ def test_settings_round_trip(tmp_path, monkeypatch):
         "order_size": 15,
         "target_spread": 0.03,
         "per_market_stop_loss": 1.5,
+        "optimizer_auto_enabled": True,
+        "optimizer_scale_multiplier": 1.7,
         "allowed_categories": ["sports", "crypto"],
     }
     response = client.put("/settings", json=updated)
@@ -31,6 +33,7 @@ def test_settings_round_trip(tmp_path, monkeypatch):
     body = response.json()
     assert body["order_size"] == 15
     assert body["per_market_stop_loss"] == 1.5
+    assert body["optimizer_scale_multiplier"] == 1.7
     assert body["allowed_categories"] == ["sports", "crypto"]
     assert EditableBotSettings.model_validate(body).order_size == 15
 

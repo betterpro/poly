@@ -16,6 +16,8 @@ class EditableBotSettings(BaseModel):
     run_mode: Literal["paper", "live"] = "paper"
     max_daily_loss: float = Field(gt=0)
     per_market_stop_loss: float = Field(gt=0)
+    optimizer_auto_enabled: bool = True
+    optimizer_scale_multiplier: float = Field(gt=0)
     max_position_per_market: float = Field(gt=0)
     max_total_exposure: float = Field(gt=0)
     max_order_size: float = Field(gt=0)
@@ -37,6 +39,8 @@ class EditableBotSettings(BaseModel):
             run_mode=settings.run_mode,
             max_daily_loss=settings.max_daily_loss,
             per_market_stop_loss=settings.per_market_stop_loss,
+            optimizer_auto_enabled=settings.optimizer_auto_enabled,
+            optimizer_scale_multiplier=settings.optimizer_scale_multiplier,
             max_position_per_market=settings.max_position_per_market,
             max_total_exposure=settings.max_total_exposure,
             max_order_size=settings.max_order_size,

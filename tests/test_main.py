@@ -3,6 +3,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from polymarket_mm_bot.main import (
+    _OptimizerControls,
     _QuoteSpec,
     _buy_quote_size,
     _cancel_buy_orders_for_market,
@@ -10,6 +11,7 @@ from polymarket_mm_bot.main import (
     _metadata_quoteable,
     _position_marked_pnl,
     _quote_matches,
+    _scaled_signal_size,
     _sell_quote_size,
     _sync_market_quotes,
 )
@@ -51,6 +53,16 @@ def test_position_marked_pnl_includes_unrealized(settings):
     position.realized_pnl = -0.5
 
     assert _position_marked_pnl(inventory, position, 0.4) == pytest.approx(-1.5)
+
+
+def test_scaled_signal_size_only_boosts_optimizer_candidates(settings):
+    controls = _OptimizerControls(blocked_market_ids=set(), scaled_market_ids={"m1"})
+    settings.optimizer_scale_multiplier = 1.5
+    settings.max_order_size = 20
+
+    assert _scaled_signal_size(settings, "m1", 10, controls) == 15
+    assert _scaled_signal_size(settings, "m2", 10, controls) == 10
+    assert _scaled_signal_size(settings, "m1", 18, controls) == 20
 
 
 def test_quote_matches_requires_exact_resting_quote():

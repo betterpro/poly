@@ -222,6 +222,8 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     const fields = [
       ["max_daily_loss", "number", "Max daily loss"],
       ["per_market_stop_loss", "number", "Per-market stop loss"],
+      ["optimizer_auto_enabled", "checkbox", "Auto optimizer"],
+      ["optimizer_scale_multiplier", "number", "Optimizer scale multiplier"],
       ["max_position_per_market", "number", "Max position / market"],
       ["max_total_exposure", "number", "Max total exposure"],
       ["max_order_size", "number", "Max order size"],
@@ -242,6 +244,8 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       run_mode: "Paper uses the simulator; live sends real orders (requires LIVE_TRADING_CONFIRMED and wallet env vars).",
       max_daily_loss: "Stop trading when today's PnL falls below this loss, in USD. Resets each calendar day.",
       per_market_stop_loss: "Stop adding new buy exposure to a market once its marked PnL is below this loss. Sells remain allowed so inventory can exit.",
+      optimizer_auto_enabled: "Automatically block reduce candidates and scale proven positive candidates from persisted fill analytics.",
+      optimizer_scale_multiplier: "Multiplier applied to signal size only for optimizer scale candidates. Still capped by max order size.",
       max_position_per_market: "Maximum shares held on one side (yes or no) in a single market.",
       max_total_exposure: "Cap on total capital at risk across all open positions, in USD.",
       max_order_size: "Largest single order the bot may place, in shares.",
