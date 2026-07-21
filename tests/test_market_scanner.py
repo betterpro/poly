@@ -68,6 +68,22 @@ def test_market_scoring_rejects_too_small_spread(settings, market):
     assert "spread_too_small" in score.reasons
 
 
+def test_market_scoring_accepts_floating_point_min_spread_boundary(settings, market):
+    from polymarket_mm_bot.models import BookLevel, OrderBook
+
+    settings.min_spread = 0.01
+    book = OrderBook(
+        market_id="m1",
+        token_id="yes-token",
+        bids=[BookLevel(price=0.125, size=5000)],
+        asks=[BookLevel(price=0.135, size=5000)],
+    )
+
+    score = MarketScanner(settings).score_market(market, book, [])
+
+    assert "spread_too_small" not in score.reasons
+
+
 def test_market_scoring_rejects_sub_minimum_positive_spread(settings, market):
     book = OrderBook(
         market_id="m1",

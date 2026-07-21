@@ -9,6 +9,8 @@ from polymarket_mm_bot.utils import clamp, market_dict_matches_categories
 
 logger = structlog.get_logger()
 
+_EPSILON = 1e-9
+
 
 class MarketScanner:
     def __init__(self, settings: Settings):
@@ -57,7 +59,7 @@ class MarketScanner:
             spread = order_book.spread
             if order_book.best_ask is not None and order_book.best_ask < self.settings.min_quote_price:
                 reasons.append("price_below_min_quote")
-            if spread is None or spread < self.settings.min_spread:
+            if spread is None or spread + _EPSILON < self.settings.min_spread:
                 reasons.append("spread_too_small")
             elif spread > 0.15:
                 reasons.append("spread_manipulation_risk")
