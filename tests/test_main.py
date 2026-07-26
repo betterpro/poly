@@ -14,8 +14,10 @@ from polymarket_mm_bot.main import (
     _scaled_signal_size,
     _sell_quote_size,
     _sync_market_quotes,
+    _with_optimizer_scale_candidates,
 )
-from polymarket_mm_bot.models import BotOrder, Market, OrderStatus, Position, Side
+from polymarket_mm_bot.market_scanner import MarketScanner
+from polymarket_mm_bot.models import BookLevel, BotOrder, Market, OrderBook, OrderStatus, Position, Side
 
 
 def test_buy_quote_size_tapers_before_inventory_limit(settings):
@@ -219,3 +221,50 @@ async def test_cancel_unmanaged_stale_orders_keeps_managed_market(settings):
 
     assert execution.canceled == ["unmanaged"]
     assert managed.status == OrderStatus.OPEN
+
+
+def test_optimizer_scale_candidates_are_added_to_selected_markets(settings, market, book):
+    candidate = Market(
+        condition_id="winner",
+        question="Will the winner keep working?",
+        volume=1_000,
+        liquidity=1_000,
+        category="crypto",
+        end_date=market.end_date,
+        yes_token_id="winner-token",
+    )
+    candidate_book = OrderBook(
+        market_id="winner",
+        token_id="winner-token",
+        bids=[BookLevel(price=0.39, size=500)],
+        asks=[BookLevel(price=0.42, size=500)],
+    )
+    controls = _OptimizerControls(blocked_market_ids=set(), scaled_market_ids={"winner"})
+
+    selected = _with_optimizer_scale_candidates(
+        settings,
+        [market],
+        [market, candidate],
+        {"m1": book, "winner": candidate_book},
+        {"m1": [], "winner": []},
+        MarketScanner(settings),
+        controls,
+    )
+
+    assert [item.condition_id for item in selected] == ["m1", "winner"]
+
+
+def test_optimizer_scale_candidates_respect_block_list(settings, market, book):
+    controls = _OptimizerControls(blocked_market_ids={"m1"}, scaled_market_ids={"m1"})
+
+    selected = _with_optimizer_scale_candidates(
+        settings,
+        [],
+        [market],
+        {"m1": book},
+        {"m1": []},
+        MarketScanner(settings),
+        controls,
+    )
+
+    assert selected == []

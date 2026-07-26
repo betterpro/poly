@@ -341,6 +341,35 @@ def _metadata_quoteable(settings, market: Market) -> bool:
     return ask - bid >= settings.min_spread and ask > settings.min_tick and bid < 1 - settings.min_tick
 
 
+def _with_optimizer_scale_candidates(
+    settings,
+    selected: list[Market],
+    markets: list[Market],
+    books: dict[str, OrderBook],
+    trades: dict[str, list],
+    scanner: MarketScanner,
+    controls: _OptimizerControls,
+) -> list[Market]:
+    """Keep proven-positive optimizer candidates in the quoted set when valid."""
+    selected_by_id = {market.condition_id: market for market in selected}
+    if not controls.scaled_market_ids:
+        return list(selected_by_id.values())
+
+    market_lookup = {market.condition_id: market for market in markets}
+    for market_id in sorted(controls.scaled_market_ids):
+        if market_id in selected_by_id or market_id in controls.blocked_market_ids:
+            continue
+        market = market_lookup.get(market_id)
+        book = books.get(market_id)
+        if market is None or book is None:
+            continue
+        score = scanner.score_market(market, book, trades.get(market_id, []))
+        if not score.rejected:
+            selected_by_id[market_id] = market
+
+    return list(selected_by_id.values())[: settings.max_markets_traded]
+
+
 def _quote_matches(order: BotOrder, market_id: str, quote: _QuoteSpec) -> bool:
     return (
         order.market_id == market_id
@@ -692,6 +721,7 @@ async def run_once() -> None:
     strategy = MarketMakingStrategy(settings, inventory)
     scanner = MarketScanner(settings)
     data = PolymarketDataClient(settings)
+    optimizer_controls = _load_optimizer_controls(runtime, settings)
     state.bot_status = "starting"
     try:
         try:
@@ -736,7 +766,9 @@ async def run_once() -> None:
             data,
             settings,
             markets,
-            include_market_ids=position_market_ids,
+            include_market_ids=position_market_ids
+            | optimizer_controls.scaled_market_ids
+            | optimizer_controls.blocked_market_ids,
         )
         api_blocked = False
         api_error_signals = 1 if market_data_errors and not books else 0
@@ -752,13 +784,21 @@ async def run_once() -> None:
             risk.reset_api_errors()
 
         selected = scanner.select_markets(markets, books, trades)
-        optimizer_controls = _load_optimizer_controls(runtime, settings)
         if optimizer_controls.blocked_market_ids:
             selected = [
                 market for market in selected if market.condition_id not in optimizer_controls.blocked_market_ids
             ]
             for market_id in optimizer_controls.blocked_market_ids:
                 await _cancel_buy_orders_for_market(execution, market_id)
+        selected = _with_optimizer_scale_candidates(
+            settings,
+            selected,
+            markets,
+            books,
+            trades,
+            scanner,
+            optimizer_controls,
+        )
         state.selected_markets = selected
         trading_enabled = is_trading_enabled() and not api_blocked
         trade_mode = "paper_trading" if settings.paper_trading else "live_trading"
