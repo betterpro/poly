@@ -18,6 +18,11 @@ class EditableBotSettings(BaseModel):
     per_market_stop_loss: float = Field(gt=0)
     optimizer_auto_enabled: bool = True
     optimizer_scale_multiplier: float = Field(gt=0)
+    optimizer_plan_enabled: bool = True
+    optimizer_plan_interval_seconds: int = Field(gt=0)
+    optimizer_target_daily_pnl: float = Field(gt=0)
+    optimizer_max_order_size_ceiling: float = Field(gt=0)
+    optimizer_max_exposure_ceiling: float = Field(gt=0)
     max_position_per_market: float = Field(gt=0)
     max_total_exposure: float = Field(gt=0)
     max_order_size: float = Field(gt=0)
@@ -41,6 +46,11 @@ class EditableBotSettings(BaseModel):
             per_market_stop_loss=settings.per_market_stop_loss,
             optimizer_auto_enabled=settings.optimizer_auto_enabled,
             optimizer_scale_multiplier=settings.optimizer_scale_multiplier,
+            optimizer_plan_enabled=settings.optimizer_plan_enabled,
+            optimizer_plan_interval_seconds=settings.optimizer_plan_interval_seconds,
+            optimizer_target_daily_pnl=settings.optimizer_target_daily_pnl,
+            optimizer_max_order_size_ceiling=settings.optimizer_max_order_size_ceiling,
+            optimizer_max_exposure_ceiling=settings.optimizer_max_exposure_ceiling,
             max_position_per_market=settings.max_position_per_market,
             max_total_exposure=settings.max_total_exposure,
             max_order_size=settings.max_order_size,
@@ -131,6 +141,7 @@ def _save(payload: EditableBotSettings, session: Session) -> EditableBotSettings
         "trading_control",
         "live_totp_last_counter",
         "mode_change",
+        "optimizer_plan",
     )
     try:
         row = session.get(BotConfigRow, 1)

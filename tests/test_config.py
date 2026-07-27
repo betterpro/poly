@@ -12,6 +12,9 @@ def test_paper_trading_default_is_safe():
     assert settings.per_market_stop_loss == 2.0
     assert settings.optimizer_auto_enabled is True
     assert settings.optimizer_scale_multiplier == 1.5
+    assert settings.optimizer_plan_enabled is True
+    assert settings.optimizer_plan_interval_seconds == 3600
+    assert settings.optimizer_target_daily_pnl == 100.0
 
 
 def test_live_trading_requires_confirmation_and_key():

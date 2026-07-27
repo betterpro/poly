@@ -44,6 +44,11 @@ class Settings(BaseSettings):
     per_market_stop_loss: float = 2.0
     optimizer_auto_enabled: bool = True
     optimizer_scale_multiplier: float = 1.5
+    optimizer_plan_enabled: bool = True
+    optimizer_plan_interval_seconds: int = 3600
+    optimizer_target_daily_pnl: float = 100.0
+    optimizer_max_order_size_ceiling: float = 150.0
+    optimizer_max_exposure_ceiling: float = 10_000.0
     max_position_per_market: float = 200.0
     max_total_exposure: float = 1_000.0
     max_order_size: float = 25.0

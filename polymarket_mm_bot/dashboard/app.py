@@ -360,6 +360,19 @@ def create_app() -> FastAPI:
             logger.warning("optimizer_report_failed", error=str(exc))
             raise HTTPException(status_code=503, detail="Could not load optimizer report.") from exc
 
+    @app.get("/performance/optimizer/plan")
+    async def performance_optimizer_plan() -> dict:
+        snapshot = _status()
+        editable = get_editable_settings()
+        return {
+            "enabled": editable.optimizer_plan_enabled,
+            "interval_seconds": editable.optimizer_plan_interval_seconds,
+            "target_daily_pnl": editable.optimizer_target_daily_pnl,
+            "order_size_ceiling": editable.optimizer_max_order_size_ceiling,
+            "exposure_ceiling": editable.optimizer_max_exposure_ceiling,
+            "last_decision": snapshot.get("optimizer_plan", {}),
+        }
+
     @app.post("/pnl/reset-daily")
     async def reset_daily_pnl() -> dict:
         if not database_ok():

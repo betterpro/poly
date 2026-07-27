@@ -226,3 +226,26 @@ def test_optimizer_endpoint_returns_market_recommendations(tmp_path, monkeypatch
     assert body["markets"][0]["market_id"] == "m1"
     assert body["markets"][0]["realized_pnl"] == 1.1
     assert body["markets"][0]["recommendation"] == "candidate_scale_up"
+
+
+def test_optimizer_plan_endpoint_returns_last_decision(monkeypatch):
+    snapshot = {
+        "optimizer_plan": {
+            "ran": True,
+            "action": "scale_profitable_flow",
+            "changed": {"order_size": {"before": 50, "after": 57.5}},
+        }
+    }
+    monkeypatch.setattr(dashboard_app, "_status", lambda: snapshot)
+    monkeypatch.setenv("DASHBOARD_PASSWORD", "secret")
+    from polymarket_mm_bot.config.settings import get_settings
+
+    get_settings.cache_clear()
+    client = TestClient(dashboard_app.create_app())
+    client.auth = ("admin", "secret")
+
+    body = client.get("/performance/optimizer/plan").json()
+
+    assert body["enabled"] is True
+    assert body["target_daily_pnl"] == 100.0
+    assert body["last_decision"]["action"] == "scale_profitable_flow"

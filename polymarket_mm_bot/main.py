@@ -21,6 +21,7 @@ from polymarket_mm_bot.logging import configure_logging
 from polymarket_mm_bot.models import BotOrder, Market, OrderBook, OrderStatus, Position, Side
 from polymarket_mm_bot.market_scanner import MarketScanner
 from polymarket_mm_bot.risk import RiskEngine
+from polymarket_mm_bot.reporting.auto_optimizer import maybe_apply_optimizer_plan
 from polymarket_mm_bot.reporting.optimizer import build_optimizer_controls
 from polymarket_mm_bot.strategy import REASON_TOXIC_PULL, MarketMakingStrategy
 from polymarket_mm_bot.trading_runtime import get_trading_runtime
@@ -559,6 +560,10 @@ def _open_buy_credit(orders: list[BotOrder]) -> float:
     )
 
 
+def _capital_deployed(orders: list[BotOrder], positions: list[Position]) -> float:
+    return round(_open_buy_credit(orders) + sum(position.gross_exposure for position in positions), 4)
+
+
 def _active_strategy_profile_payload(settings, orders: list[BotOrder]) -> dict:
     open_orders = [order for order in orders if order.status in _OPEN_ORDER_STATUSES]
     return {
@@ -909,6 +914,31 @@ async def run_once() -> None:
         state.mode_warning = settings.mode_warning
         state.recent_fills = list(getattr(execution, "recent_fills", []))[-50:]
         _maybe_write_pnl_snapshot(runtime, settings)
+        optimizer_plan = {}
+        if runtime.session_factory is not None:
+            try:
+                with runtime.session_factory() as session:
+                    optimizer_plan = maybe_apply_optimizer_plan(
+                        session,
+                        settings,
+                        metrics={
+                            "daily_pnl": state.daily_pnl,
+                            "total_pnl": state.total_pnl,
+                            "selected_markets": len(state.selected_markets),
+                            "open_orders": len(state.orders),
+                            "capital_deployed": _capital_deployed(state.orders, state.positions),
+                        },
+                    )
+                if optimizer_plan.get("ran"):
+                    clear_runtime_settings_cache()
+                    logger.info(
+                        "optimizer_plan_applied",
+                        action=optimizer_plan.get("action"),
+                        changed=optimizer_plan.get("changed"),
+                    )
+            except Exception as exc:
+                optimizer_plan = {"ran": False, "reason": "error", "error": str(exc)}
+                logger.warning("optimizer_plan_failed", error=str(exc))
         shadow_profiles = await _run_shadow_strategy_profiles(settings, markets, books, trades)
         state.strategy_profiles = [
             _active_strategy_profile_payload(settings, state.orders),
@@ -952,6 +982,7 @@ async def run_once() -> None:
                     "scaled_market_ids": sorted(optimizer_controls.scaled_market_ids),
                     "summary": (optimizer_controls.report or {}).get("summary", {}),
                 },
+                "optimizer_plan": optimizer_plan,
             }
         )
     finally:
