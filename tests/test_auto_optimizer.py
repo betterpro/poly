@@ -113,9 +113,97 @@ def test_optimizer_plan_tightens_when_daily_pnl_is_negative(tmp_path, monkeypatc
         row = session.get(BotConfigRow, 1)
 
     assert result["ran"] is True
-    assert result["action"] == "tighten_risk"
+    assert result["action"] == "tighten_quiet_or_loss"
     assert row.config_json["order_size"] < 50
     assert row.config_json["target_spread"] > 0.022
+
+
+def test_optimizer_plan_tightens_when_capital_is_deployed_without_recent_fills(tmp_path, monkeypatch):
+    factory = _factory(tmp_path, monkeypatch)
+    now = datetime(2026, 7, 26, 12, tzinfo=UTC)
+    settings = Settings(
+        optimizer_plan_interval_seconds=60,
+        order_size=150,
+        max_order_size=150,
+        target_spread=0.022,
+        market_score_threshold=55,
+        optimizer_scale_multiplier=3.0,
+    )
+    with factory() as session:
+        session.add(
+            BotConfigRow(
+                id=1,
+                config_json={
+                    "order_size": 150,
+                    "max_order_size": 150,
+                    "target_spread": 0.022,
+                    "market_score_threshold": 55,
+                    "optimizer_scale_multiplier": 3.0,
+                },
+                status_json={},
+            )
+        )
+        session.commit()
+
+        result = maybe_apply_optimizer_plan(
+            session,
+            settings,
+            metrics={
+                "daily_pnl": 0.0,
+                "total_pnl": 8.4,
+                "selected_markets": 3,
+                "open_orders": 3,
+                "capital_deployed": 400,
+            },
+            now=now,
+        )
+        row = session.get(BotConfigRow, 1)
+
+    assert result["ran"] is True
+    assert result["action"] == "tighten_quiet_or_loss"
+    assert row.config_json["order_size"] == 127.5
+    assert row.config_json["optimizer_scale_multiplier"] == 2.75
+
+
+def test_optimizer_plan_observes_historical_winners_without_recent_closed_flow(tmp_path, monkeypatch):
+    factory = _factory(tmp_path, monkeypatch)
+    now = datetime(2026, 7, 26, 12, tzinfo=UTC)
+    old = now - timedelta(days=2)
+    settings = Settings(
+        optimizer_plan_interval_seconds=60,
+        order_size=50,
+        max_order_size=90,
+        max_total_exposure=6000,
+    )
+    with factory() as session:
+        session.add(
+            BotConfigRow(
+                id=1,
+                config_json={"order_size": 50, "max_order_size": 90, "max_total_exposure": 6000},
+                status_json={},
+            )
+        )
+        session.add_all(
+            [
+                TradeRow(order_id="b1", market_id="old-winner", side="buy", price=0.10, size=50, timestamp=old),
+                TradeRow(order_id="s1", market_id="old-winner", side="sell", price=0.12, size=25, timestamp=old + timedelta(minutes=1)),
+                TradeRow(order_id="s2", market_id="old-winner", side="sell", price=0.12, size=25, timestamp=old + timedelta(minutes=2)),
+                TradeRow(order_id="b2", market_id="old-winner", side="buy", price=0.10, size=1, timestamp=old + timedelta(minutes=3)),
+            ]
+        )
+        session.commit()
+
+        result = maybe_apply_optimizer_plan(
+            session,
+            settings,
+            metrics={"daily_pnl": 0.0, "total_pnl": 8.4, "selected_markets": 3, "open_orders": 3, "capital_deployed": 54},
+            now=now,
+        )
+        row = session.get(BotConfigRow, 1)
+
+    assert result["ran"] is True
+    assert result["action"] == "observe"
+    assert row.config_json["order_size"] == 50
 
 
 def test_optimizer_plan_waits_for_interval(tmp_path, monkeypatch):

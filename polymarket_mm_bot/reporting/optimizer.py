@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 
 from sqlalchemy.orm import Session
 
@@ -19,10 +20,13 @@ class _MarketLedger:
     yes_size: float = 0.0
     avg_yes_price: float = 0.0
     realized_pnl: float = 0.0
+    latest_fill_at: datetime | None = None
 
-    def apply(self, side: str | None, price: float, size: float) -> None:
+    def apply(self, side: str | None, price: float, size: float, timestamp: datetime | None = None) -> None:
         if size <= 0:
             return
+        if timestamp is not None and (self.latest_fill_at is None or timestamp > self.latest_fill_at):
+            self.latest_fill_at = timestamp
         notional = price * size
         if str(side).lower() == "buy":
             self.buys += 1
@@ -79,6 +83,7 @@ class _MarketLedger:
             "open_yes_size": round(self.yes_size, 6),
             "avg_yes_price": round(self.avg_yes_price, 6),
             "recommendation": self.recommendation(),
+            "latest_fill_at": self.latest_fill_at.isoformat() if self.latest_fill_at else None,
         }
 
 
@@ -99,7 +104,7 @@ def build_optimizer_report(session: Session, *, limit: int = 20) -> dict:
             row.market_id,
             _MarketLedger(market_id=row.market_id, question=markets.get(row.market_id)),
         )
-        ledger.apply(row.side, float(row.price or 0.0), float(row.size or 0.0))
+        ledger.apply(row.side, float(row.price or 0.0), float(row.size or 0.0), row.timestamp)
 
     ranked = sorted(ledgers.values(), key=lambda item: item.realized_pnl, reverse=True)
     payloads = [ledger.payload() for ledger in ranked]

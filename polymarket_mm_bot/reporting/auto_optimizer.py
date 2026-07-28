@@ -10,6 +10,7 @@ from polymarket_mm_bot.database.orm import BotConfigRow
 from polymarket_mm_bot.reporting.optimizer import build_optimizer_report
 from polymarket_mm_bot.utils import clamp
 
+_RECENT_FILL_WINDOW_SECONDS = 4 * 3600
 
 _SETTINGS_KEYS = {
     "max_daily_loss",
@@ -56,9 +57,36 @@ def _bounded(value: float, *, floor: float, ceiling: float, ndigits: int = 4) ->
     return round(clamp(value, floor, ceiling), ndigits)
 
 
+def _recent_fill_metrics(report: dict, now: datetime) -> dict:
+    window_start = now.timestamp() - _RECENT_FILL_WINDOW_SECONDS
+    recent_fills = 0
+    recent_closed_markets = 0
+    recent_realized_pnl = 0.0
+    for market in report.get("markets") or []:
+        latest_at = _parse_dt(market.get("latest_fill_at"))
+        if latest_at is None or latest_at.timestamp() < window_start:
+            continue
+        fills = int(market.get("fills") or 0)
+        buys = int(market.get("buys") or 0)
+        sells = int(market.get("sells") or 0)
+        recent_fills += fills
+        recent_realized_pnl += float(market.get("realized_pnl") or 0.0)
+        if buys > 0 and sells > 0:
+            recent_closed_markets += 1
+    return {
+        "recent_fills": recent_fills,
+        "recent_closed_markets": recent_closed_markets,
+        "recent_realized_pnl": round(recent_realized_pnl, 4),
+    }
+
+
 def _next_scaled_config(config: dict, settings: Settings, metrics: dict, report: dict) -> tuple[str, dict]:
     daily_pnl = float(metrics.get("daily_pnl") or 0.0)
     selected_markets = int(metrics.get("selected_markets") or 0)
+    capital_deployed = float(metrics.get("capital_deployed") or 0.0)
+    recent_fills = int(metrics.get("recent_fills") or 0)
+    recent_closed_markets = int(metrics.get("recent_closed_markets") or 0)
+    recent_realized_pnl = float(metrics.get("recent_realized_pnl") or 0.0)
     scale_count = int((report.get("summary") or {}).get("scale_candidates") or 0)
     reduce_count = int((report.get("summary") or {}).get("reduce_candidates") or 0)
     roi_pct = float((report.get("summary") or {}).get("roi_pct") or 0.0)
@@ -69,15 +97,18 @@ def _next_scaled_config(config: dict, settings: Settings, metrics: dict, report:
     updated = dict(config)
     updated["optimizer_auto_enabled"] = True
 
-    if daily_pnl < 0 or roi_pct <= -5.0:
+    quiet_deployed = capital_deployed >= max(float(config["order_size"]) * 2, 100.0) and recent_fills == 0
+    if daily_pnl < 0 or roi_pct <= -5.0 or quiet_deployed:
         updated["order_size"] = _bounded(float(config["order_size"]) * 0.85, floor=10.0, ceiling=order_ceiling)
         updated["max_order_size"] = _bounded(float(config["max_order_size"]) * 0.9, floor=20.0, ceiling=order_ceiling)
         updated["target_spread"] = _bounded(float(config["target_spread"]) + 0.003, floor=0.018, ceiling=0.05)
         updated["market_score_threshold"] = _bounded(float(config["market_score_threshold"]) + 3, floor=55, ceiling=85, ndigits=2)
         updated["per_market_stop_loss"] = _bounded(float(config["per_market_stop_loss"]) * 0.9, floor=0.75, ceiling=3.0)
-        return "tighten_risk", updated
+        updated["optimizer_scale_multiplier"] = _bounded(float(config["optimizer_scale_multiplier"]) - 0.25, floor=1.0, ceiling=3.0)
+        return "tighten_quiet_or_loss", updated
 
-    if daily_pnl < target_daily and scale_count > 0:
+    has_current_edge = recent_fills >= 2 and recent_closed_markets > 0 and recent_realized_pnl > 0
+    if daily_pnl < target_daily and scale_count > 0 and has_current_edge:
         updated["order_size"] = _bounded(float(config["order_size"]) * 1.15, floor=10.0, ceiling=order_ceiling)
         updated["max_order_size"] = _bounded(max(float(config["max_order_size"]) * 1.15, updated["order_size"] * 1.6), floor=20.0, ceiling=order_ceiling)
         updated["max_position_per_market"] = _bounded(float(config["max_position_per_market"]) * 1.12, floor=50.0, ceiling=order_ceiling * 3)
@@ -128,6 +159,7 @@ def maybe_apply_optimizer_plan(
         }
 
     report = build_optimizer_report(session, limit=100)
+    metrics = {**metrics, **_recent_fill_metrics(report, now)}
     action, updated = _next_scaled_config(config, settings, metrics, report)
     changed = {
         key: {"before": config.get(key), "after": updated.get(key)}
@@ -145,6 +177,9 @@ def maybe_apply_optimizer_plan(
             "selected_markets": int(metrics.get("selected_markets") or 0),
             "open_orders": int(metrics.get("open_orders") or 0),
             "capital_deployed": round(float(metrics.get("capital_deployed") or 0.0), 4),
+            "recent_fills": int(metrics.get("recent_fills") or 0),
+            "recent_closed_markets": int(metrics.get("recent_closed_markets") or 0),
+            "recent_realized_pnl": round(float(metrics.get("recent_realized_pnl") or 0.0), 4),
         },
         "optimizer_summary": {
             "fills": summary.get("fills"),
