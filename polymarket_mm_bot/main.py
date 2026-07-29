@@ -926,6 +926,8 @@ async def run_once() -> None:
                             "total_pnl": state.total_pnl,
                             "selected_markets": len(state.selected_markets),
                             "open_orders": len(state.orders),
+                            "open_buy_orders": sum(1 for order in state.orders if order.side == Side.BUY),
+                            "open_sell_orders": sum(1 for order in state.orders if order.side == Side.SELL),
                             "capital_deployed": _capital_deployed(state.orders, state.positions),
                         },
                     )
