@@ -57,6 +57,24 @@ def _bounded(value: float, *, floor: float, ceiling: float, ndigits: int = 4) ->
     return round(clamp(value, floor, ceiling), ndigits)
 
 
+def _fill_discovery_config(config: dict, settings: Settings) -> dict:
+    order_ceiling = float(getattr(settings, "optimizer_max_order_size_ceiling", 150.0))
+    exposure_ceiling = float(getattr(settings, "optimizer_max_exposure_ceiling", 10_000.0))
+    updated = dict(config)
+    updated["order_size"] = _bounded(30.0, floor=10.0, ceiling=order_ceiling)
+    updated["max_order_size"] = _bounded(45.0, floor=20.0, ceiling=order_ceiling)
+    updated["max_position_per_market"] = _bounded(120.0, floor=50.0, ceiling=order_ceiling * 3)
+    updated["max_total_exposure"] = _bounded(1800.0, floor=500.0, ceiling=exposure_ceiling)
+    updated["optimizer_scale_multiplier"] = _bounded(1.25, floor=1.0, ceiling=3.0)
+    updated["max_open_orders"] = int(clamp(max(int(config["max_open_orders"]), 180), 20, 700))
+    updated["max_markets_traded"] = int(clamp(max(int(config["max_markets_traded"]), 24), 5, 70))
+    updated["min_liquidity"] = _bounded(1800.0, floor=1000.0, ceiling=10_000.0)
+    updated["market_score_threshold"] = _bounded(66.0, floor=55, ceiling=85, ndigits=2)
+    updated["target_spread"] = _bounded(0.02, floor=0.018, ceiling=0.05)
+    updated["per_market_stop_loss"] = _bounded(1.0, floor=0.75, ceiling=3.0)
+    return updated
+
+
 def _recent_fill_metrics(report: dict, now: datetime) -> dict:
     window_start = now.timestamp() - _RECENT_FILL_WINDOW_SECONDS
     recent_fills = 0
@@ -101,7 +119,7 @@ def _next_scaled_config(config: dict, settings: Settings, metrics: dict, report:
 
     quiet_deployed = capital_deployed >= max(float(config["order_size"]) * 2, 100.0) and recent_fills == 0
     quiet_buy_only = open_buy_orders > 0 and open_sell_orders == 0 and recent_fills == 0 and daily_pnl <= 0
-    if daily_pnl < 0 or roi_pct <= -5.0 or quiet_deployed or quiet_buy_only:
+    if daily_pnl < 0 or roi_pct <= -5.0 or quiet_deployed:
         updated["order_size"] = _bounded(float(config["order_size"]) * 0.85, floor=10.0, ceiling=order_ceiling)
         updated["max_order_size"] = _bounded(float(config["max_order_size"]) * 0.9, floor=20.0, ceiling=order_ceiling)
         updated["target_spread"] = _bounded(float(config["target_spread"]) + 0.003, floor=0.018, ceiling=0.05)
@@ -109,6 +127,9 @@ def _next_scaled_config(config: dict, settings: Settings, metrics: dict, report:
         updated["per_market_stop_loss"] = _bounded(float(config["per_market_stop_loss"]) * 0.9, floor=0.75, ceiling=3.0)
         updated["optimizer_scale_multiplier"] = _bounded(float(config["optimizer_scale_multiplier"]) - 0.25, floor=1.0, ceiling=3.0)
         return "tighten_quiet_or_loss", updated
+
+    if quiet_buy_only:
+        return "discover_fills", _fill_discovery_config(config, settings)
 
     has_current_edge = (
         recent_fills >= 2

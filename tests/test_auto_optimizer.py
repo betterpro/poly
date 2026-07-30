@@ -165,7 +165,7 @@ def test_optimizer_plan_tightens_when_capital_is_deployed_without_recent_fills(t
     assert row.config_json["optimizer_scale_multiplier"] == 2.75
 
 
-def test_optimizer_plan_tightens_buy_only_quiet_state_below_capital_threshold(tmp_path, monkeypatch):
+def test_optimizer_plan_enters_fill_discovery_for_buy_only_quiet_state(tmp_path, monkeypatch):
     factory = _factory(tmp_path, monkeypatch)
     now = datetime(2026, 7, 29, 12, tzinfo=UTC)
     settings = Settings(
@@ -209,11 +209,61 @@ def test_optimizer_plan_tightens_buy_only_quiet_state_below_capital_threshold(tm
         row = session.get(BotConfigRow, 1)
 
     assert result["ran"] is True
-    assert result["action"] == "tighten_quiet_or_loss"
+    assert result["action"] == "discover_fills"
     assert result["metrics"]["open_buy_orders"] == 4
     assert result["metrics"]["open_sell_orders"] == 0
+    assert row.config_json["order_size"] == 30.0
+    assert row.config_json["max_order_size"] == 45.0
+    assert row.config_json["market_score_threshold"] == 66.0
+    assert row.config_json["target_spread"] == 0.02
+
+
+def test_optimizer_plan_tightens_loss_before_fill_discovery(tmp_path, monkeypatch):
+    factory = _factory(tmp_path, monkeypatch)
+    now = datetime(2026, 7, 29, 12, tzinfo=UTC)
+    settings = Settings(
+        optimizer_plan_interval_seconds=60,
+        order_size=120,
+        max_order_size=120,
+        target_spread=0.026,
+        market_score_threshold=55,
+        optimizer_scale_multiplier=2.95,
+    )
+    with factory() as session:
+        session.add(
+            BotConfigRow(
+                id=1,
+                config_json={
+                    "order_size": 120,
+                    "max_order_size": 120,
+                    "target_spread": 0.026,
+                    "market_score_threshold": 55,
+                    "optimizer_scale_multiplier": 2.95,
+                },
+                status_json={},
+            )
+        )
+        session.commit()
+
+        result = maybe_apply_optimizer_plan(
+            session,
+            settings,
+            metrics={
+                "daily_pnl": -0.5,
+                "total_pnl": 8.03,
+                "selected_markets": 4,
+                "open_orders": 4,
+                "open_buy_orders": 4,
+                "open_sell_orders": 0,
+                "capital_deployed": 154.47,
+            },
+            now=now,
+        )
+        row = session.get(BotConfigRow, 1)
+
+    assert result["ran"] is True
+    assert result["action"] == "tighten_quiet_or_loss"
     assert row.config_json["order_size"] == 102.0
-    assert row.config_json["market_score_threshold"] == 58
 
 
 def test_optimizer_plan_observes_historical_winners_without_recent_closed_flow(tmp_path, monkeypatch):
