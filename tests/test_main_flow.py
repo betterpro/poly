@@ -44,6 +44,11 @@ class _FailingDataClient:
         return None
 
 
+class _ExplodingDataClient:
+    def __init__(self, settings):
+        raise AssertionError("data client should not be created while trading is paused")
+
+
 async def test_run_once_cancels_orders_and_records_api_error(monkeypatch):
     runtime = _FakeRuntime()
     monkeypatch.setattr(bot_main, "get_effective_settings", lambda: Settings())
@@ -59,6 +64,22 @@ async def test_run_once_cancels_orders_and_records_api_error(monkeypatch):
     assert bot_main.state.bot_status == "api_error"
     assert bot_main.state.trading_enabled is False
     assert bot_main.state.risk_events[-1]["code"] == "api_error"
+
+
+async def test_run_once_paused_skips_market_fetch(monkeypatch):
+    runtime = _FakeRuntime()
+    monkeypatch.setattr(bot_main, "get_effective_settings", lambda: Settings())
+    monkeypatch.setattr(bot_main, "get_trading_runtime", lambda settings: runtime)
+    monkeypatch.setattr(bot_main, "PolymarketDataClient", _ExplodingDataClient)
+    monkeypatch.setattr(bot_main, "is_trading_enabled", lambda: False)
+    snapshots = []
+    monkeypatch.setattr(bot_main, "save_status_snapshot", lambda payload: snapshots.append(payload))
+
+    await bot_main.run_once()
+
+    assert runtime.execution.canceled is True
+    assert bot_main.state.bot_status == "trading_paused"
+    assert snapshots[-1]["optimizer_plan"]["reason"] == "trading_paused"
 
 
 async def test_unwind_quotes_sell_for_position_in_unselected_market(settings, market, book):

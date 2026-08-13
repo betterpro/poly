@@ -723,6 +723,36 @@ async def run_once() -> None:
     inventory = runtime.inventory
     risk = runtime.risk
     execution = runtime.execution
+    if not is_trading_enabled():
+        await execution.cancel_all_open_orders()
+        state.bot_status = "trading_paused"
+        state.trading_enabled = False
+        state.mode_warning = settings.mode_warning
+        state.orders = []
+        save_status_snapshot(
+            {
+                "bot_status": state.bot_status,
+                "trading_enabled": state.trading_enabled,
+                "mode_warning": state.mode_warning,
+                "allowed_categories": settings.allowed_categories,
+                "updated_at": datetime.now(UTC).isoformat(),
+                "active_markets_count": len(state.active_markets),
+                "selected_markets": [_slim_market_payload(m) for m in state.selected_markets],
+                "orders": [],
+                "positions": [p.model_dump(mode="json") for p in state.positions],
+                "daily_pnl": state.daily_pnl,
+                "total_pnl": state.total_pnl,
+                "realized_pnl": state.realized_pnl,
+                "unrealized_pnl": state.unrealized_pnl,
+                "daily_pnl_reset_at": state.daily_pnl_reset_at,
+                "risk_events": state.risk_events[-50:],
+                "strategy_status": {market.condition_id: "paused" for market in state.selected_markets},
+                "strategy_profiles": state.strategy_profiles,
+                "optimizer_plan": {"ran": False, "reason": "trading_paused"},
+            }
+        )
+        logger.info("trading_paused_skip_market_fetch")
+        return
     strategy = MarketMakingStrategy(settings, inventory)
     scanner = MarketScanner(settings)
     data = PolymarketDataClient(settings)
